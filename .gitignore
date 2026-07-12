@@ -1,0 +1,37 @@
+.DS_Store
+backend/vendor/
+backend/var/
+frontend/.next/
+frontend/node_modules/
+*.log
+# Symfony
+/backend/vendor/
+/backend/var/cache/
+/backend/var/log/
+/backend/.env.local
+/backend/.env.*.local
+
+# Next.js
+/frontend/node_modules/
+/frontend/.next/
+/frontend/.env.local
+/frontend/.env.*.local
+
+# General environment files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Docker local data
+docker/data/
+docker/volumes/

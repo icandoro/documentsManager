@@ -1,0 +1,58 @@
+CREATE TABLE IF NOT EXISTS users (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(180) NOT NULL UNIQUE,
+  account_code VARCHAR(24) NOT NULL UNIQUE,
+  roles JSON NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  two_factor_enabled TINYINT(1) NOT NULL DEFAULT 0,
+  totp_secret VARCHAR(64) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS profiles (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id INT UNSIGNED NOT NULL UNIQUE,
+  first_name VARCHAR(64) NOT NULL DEFAULT '',
+  last_name VARCHAR(64) NOT NULL DEFAULT '',
+  phone VARCHAR(32) DEFAULT NULL,
+  language VARCHAR(8) NOT NULL DEFAULT 'ro',
+  timezone VARCHAR(64) NOT NULL DEFAULT 'Europe/Bucharest',
+  person_type VARCHAR(24) NOT NULL DEFAULT 'individual',
+  company_name VARCHAR(160) DEFAULT NULL,
+  tax_identifier VARCHAR(32) DEFAULT NULL,
+  optional_fields JSON NOT NULL,
+  CONSTRAINT fk_profiles_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS documents (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  owner_id INT UNSIGNED NOT NULL,
+  title VARCHAR(120) NOT NULL,
+  type VARCHAR(40) NOT NULL DEFAULT 'other',
+  storage_path VARCHAR(255) NOT NULL,
+  mime_type VARCHAR(80) NOT NULL DEFAULT 'application/octet-stream',
+  size_bytes INT UNSIGNED NOT NULL DEFAULT 0,
+  signature_status VARCHAR(24) NOT NULL DEFAULT 'unsigned',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_documents_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS document_packages (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  sender_id INT UNSIGNED NOT NULL,
+  recipient_id INT UNSIGNED NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  message TEXT DEFAULT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'sent',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_packages_sender FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_packages_recipient FOREIGN KEY (recipient_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS document_package_items (
+  package_id INT UNSIGNED NOT NULL,
+  document_id INT UNSIGNED NOT NULL,
+  PRIMARY KEY (package_id, document_id),
+  CONSTRAINT fk_package_items_package FOREIGN KEY (package_id) REFERENCES document_packages(id) ON DELETE CASCADE,
+  CONSTRAINT fk_package_items_document FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

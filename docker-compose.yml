@@ -1,0 +1,62 @@
+services:
+  backend:
+    build:
+      context: ./docker/php
+    working_dir: /var/www/backend
+    volumes:
+      - ./backend:/var/www/backend
+      - backend-var:/var/www/backend/var
+    environment:
+      APP_ENV: dev
+      APP_SECRET: change-me-in-dev
+      DATABASE_URL: mysql://app:app_password@mariadb:3306/documents_manager?serverVersion=mariadb-11.4.5&charset=utf8mb4
+      CORS_ALLOW_ORIGIN: '^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$'
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    ports:
+      - "18000:8000"
+    command: sh -lc "composer install && php -S 0.0.0.0:8000 -t public"
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - frontend-node-modules:/app/node_modules
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:18000
+    depends_on:
+      - backend
+    ports:
+      - "13000:3000"
+    command: sh -lc "npm install && npm run dev -- --hostname 0.0.0.0"
+
+  mariadb:
+    image: mariadb:11.4
+    environment:
+      MARIADB_DATABASE: documents_manager
+      MARIADB_USER: app
+      MARIADB_PASSWORD: app_password
+      MARIADB_ROOT_PASSWORD: root_password
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    ports:
+      - "13306:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  adminer:
+    image: adminer:latest
+    depends_on:
+      - mariadb
+    ports:
+      - "18080:8080"
+
+volumes:
+  backend-var:
+  frontend-node-modules:
+  mariadb-data:
