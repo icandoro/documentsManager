@@ -90,7 +90,7 @@ export function AuthForm({ mode }: AuthFormProps) {
     setIsLookingUpCompany(true);
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/public/company/${normalizedCif}`);
+      const response = await fetch(`/api/public/company/${normalizedCif}`);
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
@@ -139,7 +139,7 @@ export function AuthForm({ mode }: AuthFormProps) {
     setIsSubmitting(true);
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/auth/${endpoint}`, {
+      const response = await fetch(`/api/auth/${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

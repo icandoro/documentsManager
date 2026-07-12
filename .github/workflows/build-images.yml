@@ -64,8 +64,6 @@ jobs:
           context: .
           file: ./frontend/Dockerfile
           push: true
-          build-args: |
-            NEXT_PUBLIC_API_URL=https://api.ghiseulcetateanului.ro
           tags: |
             ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
             ${{ env.FRONTEND_IMAGE }}:latest

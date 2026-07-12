@@ -12,9 +12,6 @@ WORKDIR /app
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY frontend/ ./
 
-ARG NEXT_PUBLIC_API_URL=https://api.ghiseulcetateanului.ro
-
-ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 ENV NEXT_TELEMETRY_DISABLED=1
 
 RUN npm run build
