@@ -4,6 +4,7 @@ namespace App\Controller;
 
 use App\Entity\Profile;
 use App\Entity\User;
+use App\Service\PublicCompanyLookupService;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -75,6 +76,7 @@ final class AuthController
         Request $request,
         EntityManagerInterface $entityManager,
         UserPasswordHasherInterface $passwordHasher,
+        PublicCompanyLookupService $companyLookup,
     ): JsonResponse {
         $payload = json_decode($request->getContent(), true);
 
@@ -101,8 +103,29 @@ final class AuthController
             return $this->cors(new JsonResponse(['message' => 'Parola trebuie sa aiba cel putin 8 caractere.'], 422));
         }
 
-        if (in_array($accountType, ['company', 'institution'], true) && !preg_match('/^\d{2,10}$/', (string) ($company['cif'] ?? ''))) {
-            return $this->cors(new JsonResponse(['message' => 'Introdu un CIF valid pentru persoana juridica sau institutie.'], 422));
+        $companyLookupResult = null;
+
+        if (in_array($accountType, ['company', 'institution'], true)) {
+            $normalizedCif = $companyLookup->normalizeCif((string) ($company['cif'] ?? ''));
+
+            if (!preg_match('/^\d{2,10}$/', $normalizedCif)) {
+                return $this->cors(new JsonResponse(['message' => 'Introdu un CIF valid pentru persoana juridica sau institutie.'], 422));
+            }
+
+            $companyLookupResult = $companyLookup->lookup($normalizedCif);
+
+            if (($companyLookupResult['lookupStatus'] ?? null) === 'invalid') {
+                return $this->cors(new JsonResponse(['message' => 'Introdu un CIF valid pentru persoana juridica sau institutie.'], 422));
+            }
+
+            $company = $this->mergeCompanyData($company, $companyLookupResult, $normalizedCif);
+
+            if (trim((string) ($company['name'] ?? '')) === '') {
+                return $this->cors(new JsonResponse([
+                    'message' => 'Nu am putut prelua denumirea din ANAF pentru acest CIF. Completeaza manual denumirea si incearca din nou.',
+                    'companyLookup' => $companyLookupResult,
+                ], 422));
+            }
         }
 
         $user = (new User())
@@ -119,6 +142,7 @@ final class AuthController
             ->setTaxIdentifier((string) ($company['cif'] ?? ''))
             ->setOptionalFields([
                 'company' => $company,
+                'companyLookup' => $companyLookupResult,
                 'emailConfirmationStatus' => 'pending',
                 'onboardingDocuments' => [],
                 'onboardingStatus' => $accountType === 'institution' ? 'awaiting_email_confirmation' : 'email_pending',
@@ -137,12 +161,36 @@ final class AuthController
             'message' => 'Contul a fost creat. Confirma adresa de email pentru pasul urmator.',
             'requiresEmailConfirmation' => true,
             'nextStep' => $accountType === 'institution' ? 'email_confirmation_then_institution_onboarding' : 'email_confirmation',
+            'company' => in_array($accountType, ['company', 'institution'], true) ? $company : null,
+            'companyLookup' => $companyLookupResult,
             'user' => [
                 'email' => $user->getEmail(),
                 'accountCode' => $user->getAccountCode(),
                 'accountType' => $accountType,
             ],
         ], 201));
+    }
+
+    /**
+     * @param array<string, mixed> $submitted
+     * @param array<string, mixed> $lookup
+     *
+     * @return array<string, mixed>
+     */
+    private function mergeCompanyData(array $submitted, array $lookup, string $normalizedCif): array
+    {
+        return [
+            ...$submitted,
+            'cif' => $normalizedCif,
+            'name' => trim((string) ($lookup['name'] ?? '')) !== '' ? $lookup['name'] : ($submitted['name'] ?? ''),
+            'registrationNumber' => trim((string) ($lookup['registrationNumber'] ?? '')) !== '' ? $lookup['registrationNumber'] : ($submitted['registrationNumber'] ?? ''),
+            'address' => trim((string) ($lookup['address'] ?? '')) !== '' ? $lookup['address'] : ($submitted['address'] ?? ''),
+            'postalCode' => trim((string) ($lookup['postalCode'] ?? '')) !== '' ? $lookup['postalCode'] : ($submitted['postalCode'] ?? ''),
+            'phone' => trim((string) ($lookup['phone'] ?? '')) !== '' ? $lookup['phone'] : ($submitted['phone'] ?? ''),
+            'status' => trim((string) ($lookup['status'] ?? '')) !== '' ? $lookup['status'] : ($submitted['status'] ?? ''),
+            'publicDataSource' => $lookup['source'] ?? 'manual',
+            'publicDataLookupStatus' => $lookup['lookupStatus'] ?? 'manual',
+        ];
     }
 
     private function cors(JsonResponse $response): JsonResponse

@@ -2,18 +2,42 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Building2, CheckCircle2, Landmark, UserRound, X } from "lucide-react";
-import { FormEvent, useEffect, useState } from "react";
+import { Building2, CheckCircle2, Database, IdCard, Landmark, RefreshCw, Sparkles, UploadCloud, UserRound } from "lucide-react";
+import { FormEvent, useState } from "react";
+import { demoPasswordForEmail, demoUserForEmail, PlatformUser } from "@/lib/adminData";
+import { toast } from "sonner";
 
 type AuthFormProps = {
   mode: "login" | "register" | "forgot";
 };
 
-type Notice = {
-  id: number;
-  type: "success" | "info" | "error";
+type NoticeType = "success" | "info" | "error";
+
+type LocalAccount = {
+  email: string;
+  password: string;
+  user: PlatformUser;
+};
+
+type IdentityData = {
+  firstName: string;
+  lastName: string;
+  cnp: string;
+  series: string;
+  number: string;
+  address: string;
+  county: string;
+  city: string;
+  issuedBy: string;
+  validUntil: string;
+};
+
+type OcrStatus = {
+  type: "idle" | "reading" | "success" | "warning" | "error";
   text: string;
 };
+
+const localAccountsStorageKey = "docmanager_local_accounts";
 
 const accountCards = [
   {
@@ -39,14 +63,120 @@ const accountCards = [
   },
 ];
 
+const demoAccounts = [
+  { group: "Cont demo administrare", email: "superadmin@docmanager.local", password: "superadmin123" },
+  { group: "Conturi demo utilizatori", email: "pf.demo@docmanager.local", password: "demo12345" },
+  { group: "Conturi demo utilizatori", email: "pj.demo@docmanager.local", password: "demo12345" },
+  { group: "Conturi demo utilizatori", email: "primaria.joita@docmanager.local", password: "demo12345" },
+  { group: "Conturi demo utilizatori", email: "primaria.pleasov@docmanager.local", password: "demo12345" },
+];
+
+function apiUrl(endpoint: "login" | "register") {
+  return `/api/auth/${endpoint}`;
+}
+
+function readLocalAccounts() {
+  const saved = window.localStorage.getItem(localAccountsStorageKey);
+
+  if (!saved) return [];
+
+  try {
+    const parsed = JSON.parse(saved) as LocalAccount[];
+
+    if (Array.isArray(parsed)) return parsed;
+  } catch {
+    window.localStorage.removeItem(localAccountsStorageKey);
+  }
+
+  return [];
+}
+
+function writeLocalAccount(account: LocalAccount) {
+  const accounts = readLocalAccounts().filter((item) => item.email.toLowerCase() !== account.email.toLowerCase());
+
+  window.localStorage.setItem(localAccountsStorageKey, JSON.stringify([account, ...accounts]));
+}
+
+function localAccountForCredentials(email: string, password: string) {
+  return readLocalAccounts().find((account) => account.email.toLowerCase() === email.toLowerCase() && account.password === password);
+}
+
+function mergeIdentityData(current: IdentityData, incoming: Partial<IdentityData>) {
+  return {
+    firstName: incoming.firstName || current.firstName,
+    lastName: incoming.lastName || current.lastName,
+    cnp: incoming.cnp || current.cnp,
+    series: incoming.series || current.series,
+    number: incoming.number || current.number,
+    address: incoming.address || current.address,
+    county: incoming.county || current.county,
+    city: incoming.city || current.city,
+    issuedBy: incoming.issuedBy || current.issuedBy,
+    validUntil: incoming.validUntil || current.validUntil,
+  };
+}
+
+function imageFileToAvatar(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const image = new Image();
+    const reader = new FileReader();
+
+    reader.onerror = () => reject(new Error("Nu am putut citi imaginea."));
+    reader.onload = () => {
+      image.onerror = () => reject(new Error("Imaginea nu poate fi procesata."));
+      image.onload = () => {
+        const size = 192;
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d");
+
+        if (!context) {
+          reject(new Error("Canvas indisponibil."));
+          return;
+        }
+
+        canvas.width = size;
+        canvas.height = size;
+        const sourceSize = Math.min(image.naturalWidth, image.naturalHeight);
+        const sourceX = Math.max(0, (image.naturalWidth - sourceSize) / 2);
+        const sourceY = Math.max(0, (image.naturalHeight - sourceSize) / 2);
+
+        context.drawImage(image, sourceX, sourceY, sourceSize, sourceSize, 0, 0, size, size);
+        resolve(canvas.toDataURL("image/jpeg", 0.78));
+      };
+      image.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 export function AuthForm({ mode }: AuthFormProps) {
   const router = useRouter();
   const isLogin = mode === "login";
   const isRegister = mode === "register";
-  const [notice, setNotice] = useState<Notice | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [accountType, setAccountType] = useState("individual");
   const [hasChosenAccountType, setHasChosenAccountType] = useState(!isRegister);
+  const [identityData, setIdentityData] = useState<IdentityData>({
+    firstName: "",
+    lastName: "",
+    cnp: "",
+    series: "",
+    number: "",
+    address: "",
+    county: "",
+    city: "",
+    issuedBy: "",
+    validUntil: "",
+  });
+  const [identityFile, setIdentityFile] = useState<File | null>(null);
+  const [identityPreview, setIdentityPreview] = useState("");
+  const [identityAvatarUrl, setIdentityAvatarUrl] = useState("");
+  const [isReadingIdentity, setIsReadingIdentity] = useState(false);
+  const [loginCredentials, setLoginCredentials] = useState({ email: "", password: "" });
+  const [ocrStatus, setOcrStatus] = useState<OcrStatus>({
+    type: "idle",
+    text: "Incarca o poza frontala, clara, cu tot buletinul in cadru.",
+  });
   const [companyData, setCompanyData] = useState({
     cif: "",
     name: "",
@@ -60,22 +190,87 @@ export function AuthForm({ mode }: AuthFormProps) {
   const selectedAccount = accountCards.find((card) => card.id === accountType) ?? accountCards[0];
   const SelectedAccountIcon = selectedAccount.icon;
 
-  useEffect(() => {
-    if (!notice) {
+  function showNotice(type: NoticeType, text: string) {
+    if (type === "success") {
+      toast.success(text);
       return;
     }
 
-    const timeout = window.setTimeout(() => setNotice(null), notice.type === "error" ? 6500 : 4800);
+    if (type === "error") {
+      toast.error(text);
+      return;
+    }
 
-    return () => window.clearTimeout(timeout);
-  }, [notice]);
-
-  function showNotice(type: Notice["type"], text: string) {
-    setNotice({ id: Date.now(), type, text });
+    toast.info(text);
   }
 
   function updateCompanyField(field: keyof typeof companyData, value: string) {
     setCompanyData((current) => ({ ...current, [field]: value }));
+  }
+
+  function updateIdentityField(field: keyof IdentityData, value: string) {
+    setIdentityData((current) => ({ ...current, [field]: value }));
+  }
+
+  function fillDemoCredentials(email: string, password: string) {
+    setLoginCredentials({ email, password });
+    showNotice("info", `Am completat datele pentru ${email}.`);
+  }
+
+  async function handleIdentityUpload(file: File | null) {
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      showNotice("error", "Incarca o poza valida cu buletinul.");
+      setOcrStatus({ type: "error", text: "Fisierul selectat nu este o imagine valida." });
+      return;
+    }
+
+    setIdentityFile(file);
+    if (identityPreview) {
+      window.URL.revokeObjectURL(identityPreview);
+    }
+
+    setIdentityPreview(window.URL.createObjectURL(file));
+    try {
+      setIdentityAvatarUrl(await imageFileToAvatar(file));
+    } catch {
+      setIdentityAvatarUrl("");
+    }
+    setIsReadingIdentity(true);
+    setOcrStatus({ type: "reading", text: "Procesam poza local. Poate dura cateva secunde pentru imagini mari." });
+    showNotice("info", "Rulam OCR local pe poza buletinului. Verifica informatiile inainte de creare cont.");
+
+    try {
+      const form = new FormData();
+      form.append("identity", file);
+      const response = await fetch("/api/ocr/identity", {
+        method: "POST",
+        body: form,
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        showNotice("error", data.message ?? "OCR-ul local nu a putut procesa imaginea.");
+        setOcrStatus({
+          type: "error",
+          text: data.message ?? "Nu am putut citi imaginea. Incearca o poza mai luminoasa, fara reflexii si fara margini taiate.",
+        });
+        return;
+      }
+
+      setIdentityData((current) => mergeIdentityData(current, data.fields ?? {}));
+      setOcrStatus({
+        type: data.fields?.cnp || data.fields?.lastName ? "success" : "warning",
+        text: data.message ?? "OCR-ul local a procesat imaginea. Verifica si completeaza manual campurile lipsa.",
+      });
+      showNotice(data.fields?.cnp || data.fields?.lastName ? "success" : "info", data.message ?? "OCR-ul local a procesat imaginea.");
+    } catch {
+      showNotice("error", "Nu pot contacta OCR-ul local. Verifica backend-ul Docker.");
+      setOcrStatus({ type: "error", text: "Nu pot contacta OCR-ul local. Verifica daca backend-ul Docker ruleaza." });
+    } finally {
+      setIsReadingIdentity(false);
+    }
   }
 
   async function lookupCompany() {
@@ -86,7 +281,7 @@ export function AuthForm({ mode }: AuthFormProps) {
       return;
     }
 
-    setNotice(null);
+    toast.dismiss();
     setIsLookingUpCompany(true);
 
     try {
@@ -127,7 +322,7 @@ export function AuthForm({ mode }: AuthFormProps) {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setNotice(null);
+    toast.dismiss();
 
     if (mode === "forgot") {
       showNotice("info", "Resetarea parolei va fi legata in pasul urmator.");
@@ -136,15 +331,65 @@ export function AuthForm({ mode }: AuthFormProps) {
 
     const form = new FormData(event.currentTarget);
     const endpoint = isRegister ? "register" : "login";
+    const email = String(form.get("email") ?? "").toLowerCase().trim();
+    const password = String(form.get("password") ?? "");
     setIsSubmitting(true);
 
+    function loginDemoUser() {
+      const demoUser = demoUserForEmail(email);
+      const expectedPassword = demoPasswordForEmail(email);
+
+      if (!isLogin || !demoUser || password !== expectedPassword) {
+        return false;
+      }
+
+      window.localStorage.setItem("docmanager_token", `demo-token-${demoUser.role}`);
+      window.localStorage.setItem("docmanager_user", JSON.stringify(demoUser));
+      window.localStorage.setItem("docmanager_user_role", demoUser.role);
+      window.localStorage.removeItem("docmanager_institution_onboarding");
+      showNotice("success", "Autentificare reusita. Te duc in dashboard.");
+      setTimeout(() => router.push("/dashboard"), 700);
+
+      return true;
+    }
+
+    function loginLocalUser() {
+      const account = localAccountForCredentials(email, password);
+
+      if (!isLogin || !account) {
+        return false;
+      }
+
+      window.localStorage.setItem("docmanager_token", `local-token-${account.user.id}`);
+      window.localStorage.setItem("docmanager_user", JSON.stringify(account.user));
+      window.localStorage.setItem("docmanager_user_role", account.user.role);
+      if (account.user.accountType !== "institution") {
+        window.localStorage.removeItem("docmanager_institution_onboarding");
+      }
+      showNotice("success", "Autentificare reusita. Te duc in dashboard.");
+      setTimeout(() => router.push("/dashboard"), 700);
+
+      return true;
+    }
+
+    if (loginDemoUser()) {
+      setIsSubmitting(false);
+      return;
+    }
+
+    if (loginLocalUser()) {
+      setIsSubmitting(false);
+      return;
+    }
+
     try {
-      const response = await fetch(`/api/auth/${endpoint}`, {
+      const response = await fetch(apiUrl(endpoint), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           firstName: form.get("firstName"),
           lastName: form.get("lastName"),
+          personalData: accountType === "individual" ? identityData : null,
           email: form.get("email"),
           password: form.get("password"),
           accountType,
@@ -155,32 +400,80 @@ export function AuthForm({ mode }: AuthFormProps) {
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
+        if (loginDemoUser()) {
+          return;
+        }
+
+        if (loginLocalUser()) {
+          return;
+        }
+
         showNotice("error", data.message ?? (isRegister ? "Contul nu a putut fi creat." : "Autentificarea nu a reusit."));
         return;
       }
 
       if (isRegister) {
+        const firstName = String(form.get("firstName") ?? identityData.firstName).trim();
+        const lastName = String(form.get("lastName") ?? identityData.lastName).trim();
+        const registeredCompany = needsCompanyData ? (data.company ?? companyData) : null;
+        const name = accountType === "individual"
+          ? [firstName, lastName].filter(Boolean).join(" ") || email
+          : registeredCompany?.name || email;
+        const localUser: PlatformUser = {
+          id: `local-${Date.now()}`,
+          name,
+          email,
+          role: "user",
+          accountType: accountType as PlatformUser["accountType"],
+          firstName,
+          lastName,
+          avatarUrl: accountType === "individual" ? identityAvatarUrl : undefined,
+          cnp: accountType === "individual" ? identityData.cnp : undefined,
+          cif: registeredCompany?.cif,
+          phone: "",
+          address: {
+            street: registeredCompany?.address ?? identityData.address,
+            number: "",
+            city: identityData.city,
+            county: identityData.county,
+            postalCode: "",
+          },
+          status: accountType === "institution" ? "in_verificare" : "activ",
+          linkedInstitutionIds: [],
+          sentCount: 0,
+          receivedCount: 0,
+        };
+
+        writeLocalAccount({ email, password, user: localUser });
+
         if (accountType !== "institution") {
           window.localStorage.removeItem("docmanager_institution_onboarding");
         }
         window.localStorage.setItem("docmanager_pending_registration", JSON.stringify({
           email: form.get("email"),
           accountType,
-          company: needsCompanyData ? companyData : null,
+          company: registeredCompany,
+          companyLookup: data.companyLookup ?? null,
           nextStep: data.nextStep ?? null,
           user: data.user ?? null,
         }));
       }
 
       if (!isRegister && data.token) {
+        const demoUser = demoUserForEmail(String(data.user?.email ?? ""));
         window.localStorage.setItem("docmanager_token", data.token);
-        window.localStorage.setItem("docmanager_user", JSON.stringify(data.user ?? {}));
+        window.localStorage.setItem("docmanager_user", JSON.stringify(demoUser ?? data.user ?? {}));
+        window.localStorage.setItem("docmanager_user_role", demoUser?.role ?? "user");
         window.localStorage.removeItem("docmanager_institution_onboarding");
       }
 
       showNotice("success", isRegister ? "Contul a fost creat. Urmeaza confirmarea emailului." : "Autentificare reusita. Te duc in dashboard.");
       setTimeout(() => router.push(isRegister ? "/auth/check-email" : "/dashboard"), 700);
     } catch {
+      if (loginDemoUser() || loginLocalUser()) {
+        return;
+      }
+
       showNotice("error", "Nu pot contacta backend-ul. Verifica daca serviciile Docker sunt pornite.");
     } finally {
       setIsSubmitting(false);
@@ -189,16 +482,6 @@ export function AuthForm({ mode }: AuthFormProps) {
 
   return (
     <main className="auth-page">
-      {notice && (
-        <aside className="toast-stack" aria-live="polite">
-          <div className={`toast-card ${notice.type}`} key={notice.id}>
-            <span>{notice.text}</span>
-            <button type="button" aria-label="Inchide notificarea" onClick={() => setNotice(null)}>
-              <X size={16} />
-            </button>
-          </div>
-        </aside>
-      )}
       <Link href="/" className="brand">
         <span className="brand-mark">DM</span>
         <span>DocManager</span>
@@ -249,26 +532,93 @@ export function AuthForm({ mode }: AuthFormProps) {
                 <span><SelectedAccountIcon size={18} /> {selectedAccount.title}</span>
                 <button type="button" onClick={() => setHasChosenAccountType(false)}>Schimba</button>
               </div>
+              {accountType === "individual" && (
+                <section className="form-subsection identity-reader">
+                  <div>
+                    <p className="eyebrow">Preluare automata</p>
+                    <h2>Date din buletin</h2>
+                  </div>
+                  <div className="identity-reader-grid">
+                    <div className="identity-upload-stack">
+                      <label className="identity-upload-card">
+                        <input type="file" accept="image/*" onChange={(event) => handleIdentityUpload(event.target.files?.[0] ?? null)} />
+                        {identityPreview ? (
+                          <img src={identityPreview} alt="Preview buletin incarcat" />
+                        ) : (
+                          <span><UploadCloud size={28} /> Incarca poza buletin</span>
+                        )}
+                      </label>
+                      <div className="identity-upload-help">
+                        <strong>Preluam automat datele vizibile din act</strong>
+                        <p>Nume, prenume, CNP, serie, numar si adresa. Verifica informatiile inainte de creare cont.</p>
+                        <ul className="ocr-tips">
+                          <li>Foloseste poza frontala, nu inclinata.</li>
+                          <li>Evita reflexiile si blurul.</li>
+                          <li>Pastreaza tot actul in cadru.</li>
+                        </ul>
+                      </div>
+                    </div>
+                    <div className="identity-reader-info">
+                      <IdCard size={28} />
+                      <div>
+                        <strong>{isReadingIdentity ? "Se citesc datele..." : identityData.cnp ? "Date preluate" : "Status OCR"}</strong>
+                        <p>OCR local pentru completarea campurilor gasite.</p>
+                      </div>
+                      <div className={`ocr-status ocr-status-${ocrStatus.type}`}>{ocrStatus.text}</div>
+                      <button className="secondary-button" type="button" disabled={!identityFile || isReadingIdentity} onClick={() => handleIdentityUpload(identityFile)}>
+                        {isReadingIdentity ? "Se proceseaza..." : "Reproceseaza"}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="two-cols">
+                    <label>CNP<input name="cnp" value={identityData.cnp} onChange={(event) => updateIdentityField("cnp", event.target.value)} placeholder="CNP" /></label>
+                    <label>Serie si numar<input value={[identityData.series, identityData.number].filter(Boolean).join(" ")} onChange={(event) => {
+                      const [series = "", number = ""] = event.target.value.split(/\s+/, 2);
+                      setIdentityData((current) => ({ ...current, series, number }));
+                    }} placeholder="RX 123456" /></label>
+                  </div>
+                  <label>Adresa<input name="identityAddress" value={identityData.address} onChange={(event) => updateIdentityField("address", event.target.value)} placeholder="Adresa din actul de identitate" /></label>
+                  <div className="two-cols">
+                    <label>Localitate<input value={identityData.city} onChange={(event) => updateIdentityField("city", event.target.value)} placeholder="Localitate" /></label>
+                    <label>Judet<input value={identityData.county} onChange={(event) => updateIdentityField("county", event.target.value)} placeholder="Judet" /></label>
+                  </div>
+                  <div className="two-cols">
+                    <label>Eliberat de<input value={identityData.issuedBy} onChange={(event) => updateIdentityField("issuedBy", event.target.value)} placeholder="SPCLEP..." /></label>
+                    <label>Valabil pana la<input type="date" value={identityData.validUntil} onChange={(event) => updateIdentityField("validUntil", event.target.value)} /></label>
+                  </div>
+                </section>
+              )}
               <div className="two-cols">
-                <label>Nume<input name="lastName" placeholder="Popescu" /></label>
-                <label>Prenume<input name="firstName" placeholder="Ion" /></label>
+                <label>Nume<input name="lastName" value={identityData.lastName} onChange={(event) => updateIdentityField("lastName", event.target.value)} placeholder="Popescu" /></label>
+                <label>Prenume<input name="firstName" value={identityData.firstName} onChange={(event) => updateIdentityField("firstName", event.target.value)} placeholder="Ion" /></label>
               </div>
               {needsCompanyData && (
-                <section className="form-subsection">
-                  <div>
-                    <p className="eyebrow">Date publice</p>
-                    <h2>{accountType === "institution" ? "Date institutie" : "Date persoana juridica"}</h2>
+                <section className="form-subsection company-register-card">
+                  <div className="company-register-head">
+                    <span><Building2 size={22} /></span>
+                    <div>
+                      <p className="eyebrow">Date publice</p>
+                      <h2>{accountType === "institution" ? "Date institutie" : "Date persoana juridica"}</h2>
+                      <p>Introdu CIF-ul si incercam sa completam automat datele publice. Daca serviciul nu raspunde, poti continua manual.</p>
+                    </div>
                   </div>
-                  <div className="lookup-row">
-                    <label>CIF<input value={companyData.cif} onChange={(event) => updateCompanyField("cif", event.target.value)} placeholder="Ex: 12345678" /></label>
-                    <button className="secondary-button" type="button" onClick={lookupCompany} disabled={isLookingUpCompany}>
-                      {isLookingUpCompany ? "Se preiau..." : "Preia date"}
+                  <div className="company-lookup-card">
+                    <div className="lookup-icon"><Database size={22} /></div>
+                    <label>CIF / CUI
+                      <input value={companyData.cif} onChange={(event) => updateCompanyField("cif", event.target.value)} placeholder="Ex: 48478795" />
+                    </label>
+                    <button className="primary-button lookup-action" type="button" onClick={lookupCompany} disabled={isLookingUpCompany}>
+                      {isLookingUpCompany ? <RefreshCw size={18} className="spin-icon" /> : <Sparkles size={18} />}
+                      {isLookingUpCompany ? "Se preiau" : "Preia date"}
                     </button>
+                    <p className="lookup-hint">Sursa: servicii publice ANAF, cu fallback pe completare manuala.</p>
                   </div>
-                  <label>Denumire<input value={companyData.name} onChange={(event) => updateCompanyField("name", event.target.value)} placeholder="Denumire oficiala" /></label>
-                  <label>Nr. Registrul Comertului<input value={companyData.registrationNumber} onChange={(event) => updateCompanyField("registrationNumber", event.target.value)} placeholder="J..." /></label>
+                  <div className="two-cols">
+                    <label>Denumire<input value={companyData.name} onChange={(event) => updateCompanyField("name", event.target.value)} placeholder="Denumire oficiala" /></label>
+                    <label>Nr. Registrul Comertului<input value={companyData.registrationNumber} onChange={(event) => updateCompanyField("registrationNumber", event.target.value)} placeholder="J..." /></label>
+                  </div>
                   <label>Adresa<input value={companyData.address} onChange={(event) => updateCompanyField("address", event.target.value)} placeholder="Adresa sediu" /></label>
-                  {companyData.status && <p className="muted">Status ANAF: {companyData.status}</p>}
+                  {companyData.status && <p className="company-status-pill">Status ANAF: {companyData.status}</p>}
                 </section>
               )}
               {accountType === "institution" && (
@@ -278,12 +628,30 @@ export function AuthForm({ mode }: AuthFormProps) {
               )}
             </>
           )}
-          <label>Email<input name="email" type="email" placeholder="nume@example.com" required /></label>
-          {mode !== "forgot" && <label>Parola<input name="password" type="password" placeholder="Minim 8 caractere" minLength={8} required /></label>}
+          <label>Email<input name="email" type="email" placeholder="nume@example.com" required value={isLogin ? loginCredentials.email : undefined} onChange={isLogin ? (event) => setLoginCredentials((current) => ({ ...current, email: event.target.value })) : undefined} /></label>
+          {mode !== "forgot" && <label>Parola<input name="password" type="password" placeholder="Minim 8 caractere" minLength={8} required value={isLogin ? loginCredentials.password : undefined} onChange={isLogin ? (event) => setLoginCredentials((current) => ({ ...current, password: event.target.value })) : undefined} /></label>}
           {isLogin && <label>Cod 2FA<input inputMode="numeric" placeholder="Optional, daca este activ" /></label>}
           <button className="primary-button" type="submit" disabled={isSubmitting}>
             {isSubmitting ? "Se trimite..." : isLogin ? "Intra in cont" : isRegister ? "Creeaza cont" : "Trimite link resetare"}
           </button>
+          {isLogin && (
+            <div className="demo-accounts">
+              <strong>Cont demo administrare</strong>
+              {demoAccounts.filter((account) => account.group === "Cont demo administrare").map((account) => (
+                <button type="button" key={account.email} onClick={() => fillDemoCredentials(account.email, account.password)}>
+                  <span>{account.email}</span>
+                  <em>{account.password}</em>
+                </button>
+              ))}
+              <strong>Conturi demo utilizatori</strong>
+              {demoAccounts.filter((account) => account.group === "Conturi demo utilizatori").map((account) => (
+                <button type="button" key={account.email} onClick={() => fillDemoCredentials(account.email, account.password)}>
+                  <span>{account.email}</span>
+                  <em>{account.password}</em>
+                </button>
+              ))}
+            </div>
+          )}
         </form>}
         <div className="auth-links">
           {!isLogin && <Link href="/auth/login">Am deja cont</Link>}

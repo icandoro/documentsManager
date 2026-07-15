@@ -23,6 +23,7 @@ security:
 
   access_control:
     - { path: ^/api/auth, roles: PUBLIC_ACCESS }
+    - { path: ^/api/ocr/identity, roles: PUBLIC_ACCESS }
     - { path: ^/api/public, roles: PUBLIC_ACCESS }
     - { path: ^/api/health, roles: PUBLIC_ACCESS }
     - { path: ^/api, roles: ROLE_USER }

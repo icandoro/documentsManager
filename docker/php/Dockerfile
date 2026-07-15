@@ -34,8 +34,13 @@ FROM php:8.4-cli-alpine
 
 RUN apk add --no-cache \
         icu-libs \
+        font-dejavu \
+        imagemagick \
         libzip \
         oniguruma \
+        tesseract-ocr \
+        tesseract-ocr-data-eng \
+        tesseract-ocr-data-ron \
     && apk add --no-cache --virtual .build-deps \
         icu-dev \
         libzip-dev \
@@ -51,6 +56,7 @@ RUN apk add --no-cache \
 
 WORKDIR /var/www/backend
 
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 COPY --from=vendor /app /var/www/backend
 
 RUN mkdir -p var/cache var/log \

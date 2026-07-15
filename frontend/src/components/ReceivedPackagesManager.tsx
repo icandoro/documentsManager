@@ -1,8 +1,10 @@
 "use client";
 
+import { readAccountContexts, readActiveAccountContextId } from "@/lib/institutions";
 import { normalizePackageDocument, PackageGroup, readReceivedPackages, ReceivedPackageGroup, statusTone, writeReceivedPackages } from "@/lib/packages";
-import { CheckCircle2, ChevronLeft, ChevronRight, Download, FileInput, FileSignature, Search, UploadCloud, X } from "lucide-react";
+import { CheckCircle2, ChevronLeft, ChevronRight, Download, FileInput, FileSignature, Search, Trash2, UploadCloud, X } from "lucide-react";
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 
 const pageSize = 6;
 
@@ -19,9 +21,49 @@ type ReceivedRow = {
   documents: ReturnType<typeof normalizePackageDocument>[];
 };
 
+type DeleteTarget =
+  | { kind: "package"; row: ReceivedRow }
+  | { kind: "document"; row: ReceivedRow; documentTitle: string };
+
+function deletedPackagesStorageKey(contextId: string) {
+  return `docmanager_deleted_received_packages_${contextId}`;
+}
+
+function deletedDocumentsStorageKey(contextId: string) {
+  return `docmanager_deleted_received_documents_${contextId}`;
+}
+
+function readDeletedKeys(storageKey: string) {
+  const saved = window.localStorage.getItem(storageKey);
+
+  if (!saved) return [];
+
+  try {
+    const parsed = JSON.parse(saved) as string[];
+
+    if (Array.isArray(parsed)) return parsed;
+  } catch {
+    window.localStorage.removeItem(storageKey);
+  }
+
+  return [];
+}
+
+function packageDeleteKey(row: Pick<ReceivedRow, "email" | "packageName" | "date">) {
+  return `${row.email}::${row.packageName}::${row.date}`;
+}
+
+function documentDeleteKey(row: Pick<ReceivedRow, "email" | "packageName" | "date">, documentTitle: string) {
+  return `${packageDeleteKey(row)}::${documentTitle}`;
+}
+
 function packageStatusForDocuments(documents: ReturnType<typeof normalizePackageDocument>[], fallback: string) {
-  if (documents.every((document) => document.status === "Semnat")) return "Documente semnate";
-  if (documents.every((document) => document.status === "Primire confirmata")) return "Documente primite";
+  const signedCount = documents.filter((document) => document.status === "Semnat").length;
+  const receivedCount = documents.filter((document) => document.status === "Primire confirmata").length;
+
+  if (signedCount === documents.length && documents.length > 0) return "Documente semnate";
+  if (signedCount > 0) return "Partial semnate";
+  if (receivedCount === documents.length && documents.length > 0) return "Documente primite";
   return fallback;
 }
 
@@ -38,7 +80,7 @@ function flattenGroups(groups: ReceivedPackageGroup[]): ReceivedRow[] {
         packageName: pkg.name,
         date: pkg.date,
         purpose: isSignaturePackage ? "Semnare documente" : "Doar trimitere",
-        status: pkg.status,
+        status: packageStatusForDocuments(pkg.documents.map((document) => normalizePackageDocument(document, pkg.purpose)), pkg.status),
         isSignaturePackage,
         documents: pkg.documents.map((document) => normalizePackageDocument(document, pkg.purpose)),
       };
@@ -73,20 +115,48 @@ function downloadDocument(title: string) {
 
 export function ReceivedPackagesManager() {
   const [groups, setGroups] = useState<ReceivedPackageGroup[]>([]);
-  const [message, setMessage] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [purposeFilter, setPurposeFilter] = useState("all");
   const [receivedDateFilter, setReceivedDateFilter] = useState("");
   const [signedDateFilter, setSignedDateFilter] = useState("");
   const [selectedRow, setSelectedRow] = useState<ReceivedRow | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [deletedPackageKeys, setDeletedPackageKeys] = useState<string[]>([]);
+  const [deletedDocumentKeys, setDeletedDocumentKeys] = useState<string[]>([]);
   const [page, setPage] = useState(1);
+  const [activeContextId, setActiveContextId] = useState("independent");
 
   useEffect(() => {
-    setGroups(readReceivedPackages());
+    function syncContextPackages() {
+      const contexts = readAccountContexts();
+      const contextId = readActiveAccountContextId(contexts);
+
+      setActiveContextId(contextId);
+      setGroups(readReceivedPackages(contextId));
+      setDeletedPackageKeys(readDeletedKeys(deletedPackagesStorageKey(contextId)));
+      setDeletedDocumentKeys(readDeletedKeys(deletedDocumentsStorageKey(contextId)));
+      setSelectedRow(null);
+      setDeleteTarget(null);
+    }
+
+    syncContextPackages();
+    window.addEventListener("storage", syncContextPackages);
+    window.addEventListener("docmanager-account-context-change", syncContextPackages);
+
+    return () => {
+      window.removeEventListener("storage", syncContextPackages);
+      window.removeEventListener("docmanager-account-context-change", syncContextPackages);
+    };
   }, []);
 
-  const rows = useMemo(() => flattenGroups(groups), [groups]);
+  const rows = useMemo(() => flattenGroups(groups)
+    .filter((row) => !deletedPackageKeys.includes(packageDeleteKey(row)))
+    .map((row) => ({
+      ...row,
+      documents: row.documents.filter((document) => !deletedDocumentKeys.includes(documentDeleteKey(row, document.title))),
+    }))
+    .filter((row) => row.documents.length > 0), [deletedDocumentKeys, deletedPackageKeys, groups]);
   const statusOptions = useMemo(() => Array.from(new Set(rows.map((row) => row.status))), [rows]);
   const filteredRows = useMemo(() => rows.filter((row) => {
     const receivedDateDisplay = dateInputToDisplay(receivedDateFilter);
@@ -107,10 +177,10 @@ export function ReceivedPackagesManager() {
 
   function updatePackage(sender: ReceivedPackageGroup, packageName: string, updater: (group: ReceivedPackageGroup) => ReceivedPackageGroup) {
     setGroups((current) => {
-      const localGroups = current.filter((group) => group.from === "Contul meu" || group.email === "expeditor@docmanager.local");
-      const next = localGroups.map((group) => group.email === sender.email && group.packages.some((pkg) => pkg.name === packageName) ? updater(group) : group);
-      const updatedPackage = next.flatMap((group) => group.packages).find((pkg) => pkg.name === packageName);
-      const savedSent = window.localStorage.getItem("docmanager_sent_packages");
+      const next = current.map((group) => group.email === sender.email && group.packages.some((pkg) => pkg.name === packageName) ? updater(group) : group);
+      const updatedGroup = next.find((group) => group.email === sender.email && group.packages.some((pkg) => pkg.name === packageName));
+      const updatedPackage = updatedGroup?.packages.find((pkg) => pkg.name === packageName);
+      const savedSent = window.localStorage.getItem(`docmanager_sent_packages_${activeContextId}`);
 
       if (updatedPackage && savedSent) {
         const sentGroups = JSON.parse(savedSent) as PackageGroup[];
@@ -119,11 +189,18 @@ export function ReceivedPackagesManager() {
           packages: Array.isArray(group.packages) ? group.packages.map((pkg) => pkg.name === packageName ? updatedPackage : pkg) : group.packages,
         })) : sentGroups;
 
-        window.localStorage.setItem("docmanager_sent_packages", JSON.stringify(nextSentGroups));
+        window.localStorage.setItem(`docmanager_sent_packages_${activeContextId}`, JSON.stringify(nextSentGroups));
       }
 
-      writeReceivedPackages(next);
-      return readReceivedPackages();
+      writeReceivedPackages(next, activeContextId);
+      if (updatedGroup && updatedPackage) {
+        const updatedRow = flattenGroups([updatedGroup]).find((row) => row.packageName === packageName);
+        if (updatedRow) {
+          setSelectedRow(updatedRow);
+        }
+      }
+
+      return next;
     });
   }
 
@@ -132,7 +209,7 @@ export function ReceivedPackagesManager() {
     if (!file) return;
 
     if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
-      setMessage("Documentele semnate trebuie incarcate doar in format PDF.");
+      toast.error("Documentele semnate trebuie incarcate doar in format PDF.");
       event.target.value = "";
       return;
     }
@@ -154,8 +231,7 @@ export function ReceivedPackagesManager() {
 
       return { ...group, packages };
     });
-    setMessage(`Documentul "${documentTitle}" a fost incarcat semnat.`);
-    setSelectedRow(null);
+    toast.success(`Documentul "${documentTitle}" a fost incarcat semnat.`);
     event.target.value = "";
   }
 
@@ -176,13 +252,55 @@ export function ReceivedPackagesManager() {
 
       return { ...group, packages };
     });
-    setMessage("Primirea pachetului a fost confirmata.");
+    toast.success("Primirea pachetului a fost confirmata.");
     setSelectedRow(null);
+  }
+
+  function persistDeletedPackage(key: string) {
+    setDeletedPackageKeys((current) => {
+      const next = Array.from(new Set([...current, key]));
+
+      window.localStorage.setItem(deletedPackagesStorageKey(activeContextId), JSON.stringify(next));
+      return next;
+    });
+  }
+
+  function persistDeletedDocument(key: string) {
+    setDeletedDocumentKeys((current) => {
+      const next = Array.from(new Set([...current, key]));
+
+      window.localStorage.setItem(deletedDocumentsStorageKey(activeContextId), JSON.stringify(next));
+      return next;
+    });
+  }
+
+  function confirmDelete() {
+    if (!deleteTarget) return;
+
+    if (deleteTarget.kind === "package") {
+      persistDeletedPackage(packageDeleteKey(deleteTarget.row));
+      setSelectedRow((current) => current && current.id === deleteTarget.row.id ? null : current);
+      toast.success(`Pachetul "${deleteTarget.row.packageName}" a fost sters din documentele primite.`);
+      setDeleteTarget(null);
+      return;
+    }
+
+    const key = documentDeleteKey(deleteTarget.row, deleteTarget.documentTitle);
+    const remainingDocuments = deleteTarget.row.documents.filter((document) => document.title !== deleteTarget.documentTitle);
+
+    persistDeletedDocument(key);
+    setSelectedRow((current) => {
+      if (!current || current.id !== deleteTarget.row.id) return current;
+      if (remainingDocuments.length === 0) return null;
+
+      return { ...current, documents: remainingDocuments };
+    });
+    toast.success(`Documentul "${deleteTarget.documentTitle}" a fost sters din documentele primite.`);
+    setDeleteTarget(null);
   }
 
   return (
     <>
-      {message && <p className="inline-alert">{message}</p>}
       <section className="list-controls panel">
         <label className="compact-select search-filter">Cautare
           <span><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Pachet, document sau expeditor" /></span>
@@ -217,9 +335,15 @@ export function ReceivedPackagesManager() {
           <span>Expeditor</span>
           <span>Data primirii</span>
           <span>Status</span>
+          <span>Actiuni</span>
         </div>
         {visibleRows.map((row) => (
-          <button className="compact-package-row clickable" type="button" key={row.id} onClick={() => setSelectedRow(row)}>
+          <article className="compact-package-row clickable" key={row.id} onClick={() => setSelectedRow(row)} role="button" tabIndex={0} onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              setSelectedRow(row);
+            }
+          }}>
             <div>
               <strong><FileInput size={17} /> {row.packageName}</strong>
               <p>{row.purpose}</p>
@@ -230,7 +354,13 @@ export function ReceivedPackagesManager() {
             </div>
             <span>{row.date}</span>
             <span className={`status-chip ${statusTone(row.status)}`}>{row.status}</span>
-          </button>
+            <button className="icon-button danger received-delete-button" type="button" aria-label={`Sterge pachetul ${row.packageName}`} onClick={(event) => {
+              event.stopPropagation();
+              setDeleteTarget({ kind: "package", row });
+            }}>
+              <Trash2 size={17} />
+            </button>
+          </article>
         ))}
       </section>
 
@@ -243,7 +373,12 @@ export function ReceivedPackagesManager() {
                 <h2>{selectedRow.packageName}</h2>
                 <p>{selectedRow.from} · {selectedRow.email} · {selectedRow.date}</p>
               </div>
-              <button className="icon-button" type="button" aria-label="Inchide detaliile" onClick={() => setSelectedRow(null)}><X size={18} /></button>
+              <div className="modal-head-actions">
+                <button className="icon-button danger" type="button" aria-label={`Sterge pachetul ${selectedRow.packageName}`} onClick={() => setDeleteTarget({ kind: "package", row: selectedRow })}>
+                  <Trash2 size={18} />
+                </button>
+                <button className="icon-button" type="button" aria-label="Inchide detaliile" onClick={() => setSelectedRow(null)}><X size={18} /></button>
+              </div>
             </header>
             <div className="modal-summary">
               <span className={`status-chip ${statusTone(selectedRow.status)}`}>{selectedRow.status}</span>
@@ -253,22 +388,31 @@ export function ReceivedPackagesManager() {
             <div className="modal-doc-list">
               {selectedRow.documents.map((document) => (
                 <article className="modal-doc-row" key={document.title}>
-                  <FileSignature size={18} />
-                  <div>
-                    <strong>{document.title}</strong>
-                    <p>{document.category ?? "Fara folder"}{document.signedFile ? ` · PDF semnat: ${document.signedFile}` : ""}</p>
+                  <div className="modal-doc-main">
+                    <FileSignature size={18} />
+                    <div>
+                      <strong>{document.title}</strong>
+                      <p>{document.category ?? "Fara folder"}{document.signedFile ? ` · PDF semnat: ${document.signedFile}` : ""}</p>
+                    </div>
                   </div>
-                  <span className={`status-chip ${statusTone(document.status)}`}>{document.status}</span>
-                  <span>{document.signedAt ? `Semnat: ${document.signedAt}` : document.receivedAt ? `Primit: ${document.receivedAt}` : ""}</span>
-                  <button className="secondary-button modal-doc-action" type="button" onClick={() => downloadDocument(document.title)}>
-                    <Download size={16} /> Descarca original
-                  </button>
-                  {selectedRow.isSignaturePackage && document.status !== "Semnat" && (
-                    <label className="secondary-button upload-signed">
-                      <UploadCloud size={16} /> Incarca PDF semnat
-                      <input type="file" accept="application/pdf,.pdf" onChange={(event) => handleSignedUpload(selectedRow.sender, selectedRow.packageName, document.title, event)} />
-                    </label>
-                  )}
+                  <div className="modal-doc-meta">
+                    <span className={`status-chip ${statusTone(document.status)}`}>{document.status}</span>
+                    <small>{document.signedAt ? `Semnat: ${document.signedAt}` : document.receivedAt ? `Primit: ${document.receivedAt}` : "In asteptare"}</small>
+                  </div>
+                  <div className="modal-doc-actions">
+                    <button className="secondary-button modal-doc-action" type="button" onClick={() => downloadDocument(document.title)}>
+                      <Download size={16} /> Descarca
+                    </button>
+                    <button className="secondary-button danger-soft modal-doc-action" type="button" onClick={() => setDeleteTarget({ kind: "document", row: selectedRow, documentTitle: document.title })}>
+                      <Trash2 size={16} /> Sterge
+                    </button>
+                    {selectedRow.isSignaturePackage && document.status !== "Semnat" && (
+                      <label className="secondary-button upload-signed">
+                        <UploadCloud size={16} /> PDF semnat
+                        <input type="file" accept="application/pdf,.pdf" onChange={(event) => handleSignedUpload(selectedRow.sender, selectedRow.packageName, document.title, event)} />
+                      </label>
+                    )}
+                  </div>
                 </article>
               ))}
             </div>
@@ -277,6 +421,34 @@ export function ReceivedPackagesManager() {
                 <CheckCircle2 size={18} /> Confirma primirea
               </button>
             )}
+          </div>
+        </section>
+      )}
+
+      {deleteTarget && (
+        <section className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Confirmare stergere document primit">
+          <div className="modal-panel confirm-modal">
+            <div className="confirm-icon danger">
+              <Trash2 size={24} />
+            </div>
+            <div>
+              <p className="eyebrow">Confirmare stergere</p>
+              <h2>{deleteTarget.kind === "package" ? "Stergi pachetul primit?" : "Stergi documentul primit?"}</h2>
+              <p className="muted">
+                {deleteTarget.kind === "package"
+                  ? `Pachetul "${deleteTarget.row.packageName}" va fi eliminat din lista ta de documente primite.`
+                  : `Documentul "${deleteTarget.documentTitle}" va fi eliminat din pachetul "${deleteTarget.row.packageName}".`}
+                {" "}Aceasta actiune afecteaza doar contul tau.
+              </p>
+            </div>
+            <div className="confirm-actions">
+              <button className="secondary-button" type="button" onClick={() => setDeleteTarget(null)}>
+                Anuleaza
+              </button>
+              <button className="primary-button danger-confirm" type="button" onClick={confirmDelete}>
+                Sterge
+              </button>
+            </div>
           </div>
         </section>
       )}

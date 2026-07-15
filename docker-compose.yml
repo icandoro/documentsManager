@@ -1,7 +1,8 @@
 services:
   backend:
     build:
-      context: ./docker/php
+      context: .
+      dockerfile: docker/php/Dockerfile
     working_dir: /var/www/backend
     volumes:
       - ./backend:/var/www/backend
@@ -30,7 +31,7 @@ services:
       - backend
     ports:
       - "13000:3000"
-    command: sh -lc "npm install && npm run dev -- --hostname 0.0.0.0"
+    command: sh -lc "npm install && npm run dev -- --hostname 0.0.0.0 --webpack"
 
   mariadb:
     image: mariadb:11.4

@@ -35,6 +35,14 @@ export type ReceivedPackageGroup = {
   packages: PackageGroup["packages"];
 };
 
+export function sentPackagesStorageKey(contextId = "independent") {
+  return `docmanager_sent_packages_${contextId}`;
+}
+
+export function receivedPackagesStorageKey(contextId = "independent") {
+  return `docmanager_received_packages_${contextId}`;
+}
+
 export function packageDocumentTitle(document: string | PackageDocument) {
   return typeof document === "string" ? document : document.title;
 }
@@ -56,6 +64,7 @@ export function normalizePackageDocument(document: string | PackageDocument, pur
 export function statusTone(status: string) {
   const normalized = status.toLowerCase();
 
+  if (normalized.includes("partial")) return "partial";
   if (normalized.includes("asteapta")) return "waiting";
   if (normalized.includes("semnat")) return "signed";
   if (normalized.includes("primit") || normalized.includes("confirmata")) return "received";
@@ -64,42 +73,66 @@ export function statusTone(status: string) {
   return "neutral";
 }
 
-export function readSentPackages() {
-  const saved = window.localStorage.getItem("docmanager_sent_packages");
+function packageKey(groupEmail: string, packageName: string, date: string) {
+  return `${groupEmail}::${packageName}::${date}`;
+}
 
-  if (!saved) return sentPackages;
+function mergePackageGroups<T extends ReceivedPackageGroup | PackageGroup>(savedGroups: T[], fallbackGroups: T[]) {
+  const savedKeys = new Set(
+    savedGroups.flatMap((group) =>
+      group.packages.map((pkg) => packageKey(group.email, pkg.name, pkg.date)),
+    ),
+  );
+  const filteredFallback = fallbackGroups.map((group) => ({
+    ...group,
+    packages: group.packages.filter((pkg) => !savedKeys.has(packageKey(group.email, pkg.name, pkg.date))),
+  })).filter((group) => group.packages.length > 0);
+
+  return [...savedGroups, ...filteredFallback] as T[];
+}
+
+export function readSentPackages(contextId = "independent") {
+  const saved = window.localStorage.getItem(sentPackagesStorageKey(contextId));
+  const fallback = contextId === "independent" ? sentPackages : [];
+
+  if (!saved) return fallback;
 
   try {
     const parsed = JSON.parse(saved) as PackageGroup[];
 
     if (Array.isArray(parsed)) {
-      return [...parsed, ...sentPackages];
+      return mergePackageGroups(parsed, fallback);
     }
   } catch {
-    window.localStorage.removeItem("docmanager_sent_packages");
+    window.localStorage.removeItem(sentPackagesStorageKey(contextId));
   }
 
-  return sentPackages;
+  return fallback;
 }
 
-export function readReceivedPackages() {
-  const saved = window.localStorage.getItem("docmanager_received_packages");
+export function writeSentPackages(groups: PackageGroup[], contextId = "independent") {
+  window.localStorage.setItem(sentPackagesStorageKey(contextId), JSON.stringify(groups));
+}
 
-  if (!saved) return receivedPackages as ReceivedPackageGroup[];
+export function readReceivedPackages(contextId = "independent") {
+  const saved = window.localStorage.getItem(receivedPackagesStorageKey(contextId));
+  const fallback = contextId === "independent" ? receivedPackages as ReceivedPackageGroup[] : [];
+
+  if (!saved) return fallback;
 
   try {
     const parsed = JSON.parse(saved) as ReceivedPackageGroup[];
 
     if (Array.isArray(parsed)) {
-      return [...parsed, ...(receivedPackages as ReceivedPackageGroup[])];
+      return mergePackageGroups(parsed, fallback);
     }
   } catch {
-    window.localStorage.removeItem("docmanager_received_packages");
+    window.localStorage.removeItem(receivedPackagesStorageKey(contextId));
   }
 
-  return receivedPackages as ReceivedPackageGroup[];
+  return fallback;
 }
 
-export function writeReceivedPackages(groups: ReceivedPackageGroup[]) {
-  window.localStorage.setItem("docmanager_received_packages", JSON.stringify(groups));
+export function writeReceivedPackages(groups: ReceivedPackageGroup[], contextId = "independent") {
+  window.localStorage.setItem(receivedPackagesStorageKey(contextId), JSON.stringify(groups));
 }

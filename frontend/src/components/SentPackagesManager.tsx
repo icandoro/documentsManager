@@ -1,6 +1,7 @@
 "use client";
 
 import { PackageGroup, normalizePackageDocument, readSentPackages, statusTone } from "@/lib/packages";
+import { readAccountContexts, readActiveAccountContextId } from "@/lib/institutions";
 import { ChevronLeft, ChevronRight, Download, FileSignature, Search, Send, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
@@ -68,7 +69,22 @@ export function SentPackagesManager() {
   const [page, setPage] = useState(1);
 
   useEffect(() => {
-    setGroups(readSentPackages());
+    function syncContextPackages() {
+      const contexts = readAccountContexts();
+      const contextId = readActiveAccountContextId(contexts);
+
+      setGroups(readSentPackages(contextId));
+      setSelectedRow(null);
+    }
+
+    syncContextPackages();
+    window.addEventListener("storage", syncContextPackages);
+    window.addEventListener("docmanager-account-context-change", syncContextPackages);
+
+    return () => {
+      window.removeEventListener("storage", syncContextPackages);
+      window.removeEventListener("docmanager-account-context-change", syncContextPackages);
+    };
   }, []);
 
   const rows = useMemo(() => flattenGroups(groups), [groups]);
