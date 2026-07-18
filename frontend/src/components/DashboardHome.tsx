@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import {
   ArrowUpRight,
   Building2,
@@ -12,12 +12,12 @@ import {
   Filter,
   Gauge,
   Landmark,
-  MailCheck,
   Search,
   ShieldCheck,
   Signature,
   UserRound,
   UsersRound,
+  X,
   Zap,
 } from "lucide-react";
 import { documents, receivedPackages, sentPackages } from "@/lib/data";
@@ -25,9 +25,6 @@ import {
   PlatformInstitution,
   PlatformUser,
   readPlatformInstitutions,
-  readPlatformUsers,
-  readTaxpayerCompanies,
-  readTaxpayerPersons,
 } from "@/lib/adminData";
 import { packageDocumentTitle, readReceivedPackages, readSentPackages } from "@/lib/packages";
 
@@ -48,6 +45,22 @@ type TaxpayerView = {
   address?: string;
   sentCount: number;
   receivedCount: number;
+};
+
+type TaxpayerSummary = {
+  total: number;
+  persons: number;
+  companies: number;
+  active: number;
+};
+
+type TaxpayerApiResponse = {
+  items: TaxpayerView[];
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+  summary: TaxpayerSummary;
 };
 
 type RegistryRow = {
@@ -84,10 +97,6 @@ function readStoredUser(): StoredUser | null {
   } catch {
     return null;
   }
-}
-
-function normalizeIdentifier(value?: string) {
-  return (value ?? "").toLowerCase().replace(/^ro/, "").replace(/\D/g, "");
 }
 
 function normalizeName(value?: string) {
@@ -209,65 +218,26 @@ function GenericDashboard() {
 function InstitutionDashboard({ user }: { user: StoredUser }) {
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<"all" | "person" | "company">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "legat" | "nelegat">("all");
+  const [accountKindFilter, setAccountKindFilter] = useState("all");
+  const [page, setPage] = useState(1);
+  const [totalResults, setTotalResults] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [summary, setSummary] = useState<TaxpayerSummary>({ total: 0, persons: 0, companies: 0, active: 0 });
+  const [isLoadingTaxpayers, setIsLoadingTaxpayers] = useState(false);
   const [selectedTaxpayerId, setSelectedTaxpayerId] = useState("");
   const [institution, setInstitution] = useState<PlatformInstitution | undefined>();
+  const [institutionId, setInstitutionId] = useState(user.linkedInstitutionIds?.[0] ?? "primaria-joita");
   const [taxpayers, setTaxpayers] = useState<TaxpayerView[]>([]);
+  const [detailTaxpayer, setDetailTaxpayer] = useState<TaxpayerView | null>(null);
   const [registryRows, setRegistryRows] = useState<RegistryRow[]>([]);
   const [sentRows, setSentRows] = useState<SentHistoryRow[]>([]);
 
   useEffect(() => {
     const institutions = readPlatformInstitutions();
-    const institutionId = user.linkedInstitutionIds?.[0] ?? institutions[0]?.id ?? "primaria-joita";
-    const currentInstitution = institutions.find((item) => item.id === institutionId) ?? institutions[0];
-    const users = readPlatformUsers();
-    const persons = readTaxpayerPersons()
-      .filter((person) => person.institutionId === institutionId)
-      .map<TaxpayerView>((person) => {
-        const matchedUser = users.find((item) =>
-          normalizeIdentifier(item.cnp) === normalizeIdentifier(person.cnp) ||
-          normalizeName(item.name) === normalizeName(person.name)
-        );
-
-        return {
-          id: person.id,
-          type: "person",
-          name: person.name,
-          identifier: person.cnp,
-          locality: person.locality,
-          status: person.status,
-          institutionId: person.institutionId,
-          email: matchedUser?.email,
-          phone: matchedUser?.phone,
-          address: matchedUser?.address ? `${matchedUser.address.street} ${matchedUser.address.number}, ${matchedUser.address.city}` : undefined,
-          sentCount: matchedUser?.sentCount ?? 0,
-          receivedCount: matchedUser?.receivedCount ?? 0,
-        };
-      });
-    const companies = readTaxpayerCompanies()
-      .filter((company) => company.institutionId === institutionId)
-      .map<TaxpayerView>((company) => {
-        const matchedUser = users.find((item) =>
-          normalizeIdentifier(item.cif) === normalizeIdentifier(company.cif) ||
-          normalizeName(item.name) === normalizeName(company.name)
-        );
-
-        return {
-          id: company.id,
-          type: "company",
-          name: company.name,
-          identifier: company.cif,
-          locality: company.locality,
-          status: company.status,
-          institutionId: company.institutionId,
-          email: matchedUser?.email,
-          phone: matchedUser?.phone,
-          address: matchedUser?.address ? `${matchedUser.address.street} ${matchedUser.address.number}, ${matchedUser.address.city}` : undefined,
-          sentCount: matchedUser?.sentCount ?? 0,
-          receivedCount: matchedUser?.receivedCount ?? 0,
-        };
-      });
-    const allTaxpayers = [...persons, ...companies];
-    const received = readReceivedPackages(institutionId);
+    const nextInstitutionId = user.linkedInstitutionIds?.[0] ?? institutions[0]?.id ?? "primaria-joita";
+    const currentInstitution = institutions.find((item) => item.id === nextInstitutionId) ?? institutions[0];
+    const received = readReceivedPackages(nextInstitutionId);
     const receivedRows = received.flatMap((group, groupIndex) =>
       group.packages.map<RegistryRow>((pkg, packageIndex) => ({
         id: `received-${groupIndex}-${packageIndex}`,
@@ -312,7 +282,7 @@ function InstitutionDashboard({ user }: { user: StoredUser }) {
         documents: ["Declaratie", "Extras CF"],
       },
     ];
-    const sent = readSentPackages(institutionId);
+    const sent = readSentPackages(nextInstitutionId);
     const flattenedSent = sent.flatMap((group, groupIndex) =>
       group.packages.map<SentHistoryRow>((pkg, packageIndex) => ({
         id: `sent-${groupIndex}-${packageIndex}`,
@@ -349,36 +319,74 @@ function InstitutionDashboard({ user }: { user: StoredUser }) {
     ];
 
     setInstitution(currentInstitution);
-    setTaxpayers(allTaxpayers);
+    setInstitutionId(nextInstitutionId);
     setRegistryRows([...receivedRows, ...demoRows]);
     setSentRows([...flattenedSent, ...demoSent]);
-    setSelectedTaxpayerId((current) => current || allTaxpayers[0]?.id || "");
   }, [user]);
 
-  const filteredTaxpayers = useMemo(() => {
-    const normalizedQuery = query.toLowerCase().trim();
-
-    return taxpayers.filter((taxpayer) => {
-      const matchesType = typeFilter === "all" || taxpayer.type === typeFilter;
-      const matchesQuery = !normalizedQuery || [taxpayer.name, taxpayer.identifier, taxpayer.email ?? "", taxpayer.locality]
-        .some((value) => value.toLowerCase().includes(normalizedQuery));
-
-      return matchesType && matchesQuery;
+  useEffect(() => {
+    const controller = new AbortController();
+    const params = new URLSearchParams({
+      institutionId,
+      page: String(page),
+      limit: "20",
+      q: query,
+      type: typeFilter,
+      status: statusFilter,
+      accountKind: accountKindFilter,
     });
-  }, [query, taxpayers, typeFilter]);
-  const selectedTaxpayer = taxpayers.find((taxpayer) => taxpayer.id === selectedTaxpayerId) ?? filteredTaxpayers[0] ?? taxpayers[0];
-  const selectedIncoming = registryRows.filter((row) =>
-    selectedTaxpayer
-      ? normalizeName(row.from) === normalizeName(selectedTaxpayer.name) || row.email === selectedTaxpayer.email
+
+    setIsLoadingTaxpayers(true);
+    fetch(`/api/institution-taxpayers?${params.toString()}`, { signal: controller.signal })
+      .then((response) => response.json())
+      .then((data: TaxpayerApiResponse) => {
+        setTaxpayers(data.items);
+        setTotalResults(data.total);
+        setTotalPages(data.totalPages);
+        setSummary(data.summary);
+        setSelectedTaxpayerId((current) => data.items.some((item) => item.id === current) ? current : data.items[0]?.id ?? "");
+      })
+      .catch((error: Error) => {
+        if (error.name !== "AbortError") {
+          setTaxpayers([]);
+          setTotalResults(0);
+          setTotalPages(1);
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setIsLoadingTaxpayers(false);
+      });
+
+    return () => controller.abort();
+  }, [accountKindFilter, institutionId, page, query, statusFilter, typeFilter]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [accountKindFilter, query, statusFilter, typeFilter]);
+
+  const selectedTaxpayer = taxpayers.find((taxpayer) => taxpayer.id === selectedTaxpayerId) ?? taxpayers[0];
+  const detailIncoming = registryRows.filter((row) =>
+    detailTaxpayer
+      ? normalizeName(row.from) === normalizeName(detailTaxpayer.name) || row.email === detailTaxpayer.email
       : false,
   );
-  const selectedOutgoing = sentRows.filter((row) =>
-    selectedTaxpayer
-      ? normalizeName(row.to) === normalizeName(selectedTaxpayer.name) || row.email === selectedTaxpayer.email
+  const detailOutgoing = sentRows.filter((row) =>
+    detailTaxpayer
+      ? normalizeName(row.to) === normalizeName(detailTaxpayer.name) || row.email === detailTaxpayer.email
       : false,
   );
-  const personsCount = taxpayers.filter((taxpayer) => taxpayer.type === "person").length;
-  const companiesCount = taxpayers.filter((taxpayer) => taxpayer.type === "company").length;
+  const pendingSignatureCount = (taxpayer: TaxpayerView) => {
+    const byTaxpayer = [...registryRows, ...sentRows].filter((row) => {
+      const participantName = "from" in row ? row.from : row.to;
+
+      return normalizeName(participantName) === normalizeName(taxpayer.name) || row.email === taxpayer.email;
+    });
+
+    return byTaxpayer.filter((row) => {
+      const status = row.status.toLowerCase();
+      return row.purpose === "Semnare" && !status.includes("semnat") && !status.includes("primit");
+    }).length;
+  };
 
   return (
     <div className="institution-dashboard">
@@ -386,16 +394,15 @@ function InstitutionDashboard({ user }: { user: StoredUser }) {
         <div>
           <p className="eyebrow">Registratura</p>
           <h1>{formatInstitutionName(institution)}</h1>
-          <p className="muted">Gestioneaza contribuabilii, documentele intrate si istoricul schimburilor pe CNP/CIF.</p>
+          <p className="muted">Gestioneaza contribuabilii, legaturile de cont si istoricul schimburilor pe CNP/CIF.</p>
         </div>
         <Link href="/documents/received" className="secondary-button"><FileInput size={18} /> Registratura intrari</Link>
       </section>
 
       <section className="stats-grid institution-stats-grid">
-        <article><UsersRound /><strong>{taxpayers.length}</strong><span>Contribuabili</span><em>In evidenta</em></article>
-        <article><UserRound /><strong>{personsCount}</strong><span>Persoane fizice</span><em>CNP mapat</em></article>
-        <article><Landmark /><strong>{companiesCount}</strong><span>Persoane juridice</span><em>CIF/CUI</em></article>
-        <article><MailCheck /><strong>{registryRows.length}</strong><span>Documente intrate</span><em>Registratura</em></article>
+        <article><UsersRound /><strong>{summary.total}</strong><span>Contribuabili</span><em>In evidenta</em></article>
+        <article><UserRound /><strong>{summary.persons}</strong><span>Persoane fizice</span><em>CNP mapat</em></article>
+        <article><Landmark /><strong>{summary.companies}</strong><span>Persoane juridice</span><em>CIF/CUI</em></article>
       </section>
 
       <section className="institution-workspace">
@@ -405,7 +412,7 @@ function InstitutionDashboard({ user }: { user: StoredUser }) {
               <p className="eyebrow">Baza locala</p>
               <h2>Cetateni si companii</h2>
             </div>
-            <span>{filteredTaxpayers.length} rezultate</span>
+            <span>{isLoadingTaxpayers ? "Se incarca..." : `${totalResults} rezultate`}</span>
           </div>
           <div className="institution-filters">
             <label className="search-control">
@@ -421,103 +428,117 @@ function InstitutionDashboard({ user }: { user: StoredUser }) {
               <button type="button" className={typeFilter === "person" ? "active" : ""} onClick={() => setTypeFilter("person")}>PF</button>
               <button type="button" className={typeFilter === "company" ? "active" : ""} onClick={() => setTypeFilter("company")}>PJ</button>
             </div>
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}>
+              <option value="all">Toate statusurile</option>
+              <option value="legat">Cont legat</option>
+              <option value="nelegat">Fara cont</option>
+            </select>
+            <select value={accountKindFilter} onChange={(event) => setAccountKindFilter(event.target.value)}>
+              <option value="all">Toate tipurile</option>
+              <option value="resident">Domiciliu localitate</option>
+              <option value="property_owner">Proprietar localitate</option>
+              <option value="company_hq">Sediu social local</option>
+              <option value="company_property_owner">Companie cu proprietati</option>
+            </select>
           </div>
           <div className="institution-taxpayer-list">
-            {filteredTaxpayers.map((taxpayer) => {
+            {taxpayers.map((taxpayer) => {
               const Icon = taxpayer.type === "person" ? UserRound : Building2;
+              const incomingCount = registryRows.filter((row) => normalizeName(row.from) === normalizeName(taxpayer.name) || row.email === taxpayer.email).length;
+              const outgoingCount = sentRows.filter((row) => normalizeName(row.to) === normalizeName(taxpayer.name) || row.email === taxpayer.email).length;
+              const pendingCount = pendingSignatureCount(taxpayer);
 
               return (
-                <button
-                  type="button"
+                <article
                   className={`institution-taxpayer-row ${selectedTaxpayer?.id === taxpayer.id ? "active" : ""}`}
                   key={taxpayer.id}
-                  onClick={() => setSelectedTaxpayerId(taxpayer.id)}
                 >
-                  <span className="taxpayer-icon"><Icon size={20} /></span>
-                  <span>
-                    <strong>{taxpayer.name}</strong>
-                    <small>{taxpayer.type === "person" ? "CNP" : "CIF"} {taxpayer.identifier}</small>
+                  <button type="button" className="taxpayer-main-button" onClick={() => setSelectedTaxpayerId(taxpayer.id)}>
+                    <span className="taxpayer-icon"><Icon size={20} /></span>
+                    <span>
+                      <strong>{taxpayer.name}</strong>
+                      <small>{taxpayer.type === "person" ? "CNP" : "CIF"} {taxpayer.identifier} · {taxpayer.locality}</small>
+                    </span>
+                  </button>
+                  <span className="taxpayer-row-meta">
+                    <em className={taxpayer.status === "legat" ? "linked" : "unlinked"}>{taxpayer.status === "legat" ? "Cont legat" : "Fara cont"}</em>
+                    <small>{pendingCount} in asteptare semnare</small>
                   </span>
-                  <em className={taxpayer.status === "legat" ? "linked" : "unlinked"}>{taxpayer.status === "legat" ? "Cont legat" : "Fara cont"}</em>
-                </button>
+                  <span className="taxpayer-row-counts">
+                    <small>Primite <strong>{incomingCount}</strong></small>
+                    <small>Trimise <strong>{outgoingCount}</strong></small>
+                  </span>
+                  <button type="button" className="taxpayer-details-button" onClick={() => setDetailTaxpayer(taxpayer)}>Detalii</button>
+                </article>
               );
             })}
+            {!isLoadingTaxpayers && taxpayers.length === 0 ? <p className="empty-state-inline">Nu exista contribuabili pentru filtrele selectate.</p> : null}
           </div>
-        </article>
-
-        <article className="panel institution-registry-panel">
-          <div className="institution-panel-head">
+          <div className="institution-pagination">
+            <span>Afisare {taxpayers.length ? (page - 1) * 20 + 1 : 0}-{(page - 1) * 20 + taxpayers.length} din {totalResults}</span>
             <div>
-              <p className="eyebrow">Registratura</p>
-              <h2>Documente intrate</h2>
+              <button type="button" disabled={page <= 1 || isLoadingTaxpayers} onClick={() => setPage((current) => Math.max(1, current - 1))}>Inapoi</button>
+              <strong>{page} / {totalPages}</strong>
+              <button type="button" disabled={page >= totalPages || isLoadingTaxpayers} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}>Urmator</button>
             </div>
-            <Link href="/documents/received">Vezi toate <ArrowUpRight size={16} /></Link>
-          </div>
-          <div className="institution-registry-table">
-            <div className="institution-registry-head">
-              <span>Expeditor</span>
-              <span>Scop</span>
-              <span>Documente</span>
-              <span>Data</span>
-              <span>Status</span>
-            </div>
-            {registryRows.slice(0, 6).map((row) => (
-              <article className="institution-registry-row" key={row.id}>
-                <span><strong>{row.from}</strong><small>{row.email}</small></span>
-                <em className={row.purpose === "Semnare" ? "purpose-signature" : "purpose-info"}>{row.purpose}</em>
-                <span><strong>{row.packageName}</strong><small>{row.documents.length} documente</small></span>
-                <span>{row.date}</span>
-                <em className={`registry-status ${statusTone(row.status)}`}>{row.status}</em>
-              </article>
-            ))}
           </div>
         </article>
       </section>
 
-      {selectedTaxpayer ? (
-        <section className="panel taxpayer-detail-panel">
-          <div className="taxpayer-profile-card">
-            <span className="taxpayer-profile-icon">
-              {selectedTaxpayer.type === "person" ? <UserRound size={28} /> : <Building2 size={28} />}
-            </span>
-            <div>
-              <p className="eyebrow">{selectedTaxpayer.type === "person" ? "Persoana fizica" : "Persoana juridica"}</p>
-              <h2>{selectedTaxpayer.name}</h2>
-              <p>{selectedTaxpayer.email ?? "Cont neidentificat"} · {selectedTaxpayer.locality}</p>
-            </div>
-            <div className="taxpayer-profile-meta">
-              <span>{selectedTaxpayer.type === "person" ? "CNP" : "CIF"} <strong>{selectedTaxpayer.identifier}</strong></span>
-              <span>Trimise <strong>{selectedOutgoing.length}</strong></span>
-              <span>Primite <strong>{selectedIncoming.length}</strong></span>
-            </div>
-          </div>
-          <div className="taxpayer-history-grid">
-            <div>
-              <h3>Documente primite de la contribuabil</h3>
-              <div className="taxpayer-history-list">
-                {selectedIncoming.length ? selectedIncoming.map((row) => (
-                  <article key={row.id}>
-                    <FileInput size={18} />
-                    <span><strong>{row.packageName}</strong><small>{row.date} · {row.documents.join(", ")}</small></span>
-                    <em className={`registry-status ${statusTone(row.status)}`}>{row.status}</em>
-                  </article>
-                )) : <p className="empty-state-inline">Nu exista documente primite de la acest contribuabil.</p>}
+      {detailTaxpayer ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <section className="modal-panel taxpayer-detail-modal">
+            <button className="modal-close" type="button" aria-label="Inchide detaliile contribuabilului" onClick={() => setDetailTaxpayer(null)}>
+              <X size={22} />
+            </button>
+            <div className="taxpayer-profile-card">
+              <span className="taxpayer-profile-icon">
+                {detailTaxpayer.type === "person" ? <UserRound size={28} /> : <Building2 size={28} />}
+              </span>
+              <div>
+                <p className="eyebrow">{detailTaxpayer.type === "person" ? "Persoana fizica" : "Persoana juridica"}</p>
+                <h2>{detailTaxpayer.name}</h2>
+                <p>{detailTaxpayer.email ?? "Cont neidentificat"} · {detailTaxpayer.locality}</p>
+              </div>
+              <div className="taxpayer-profile-meta">
+                <span>{detailTaxpayer.type === "person" ? "CNP" : "CIF"} <strong>{detailTaxpayer.identifier}</strong></span>
+                <span>Trimise <strong>{detailOutgoing.length}</strong></span>
+                <span>Primite <strong>{detailIncoming.length}</strong></span>
               </div>
             </div>
-            <div>
-              <h3>Documente trimise catre contribuabil</h3>
-              <div className="taxpayer-history-list">
-                {selectedOutgoing.length ? selectedOutgoing.map((row) => (
-                  <article key={row.id}>
-                    <FileOutput size={18} />
-                    <span><strong>{row.packageName}</strong><small>{row.date} · {row.documents.join(", ")}</small></span>
-                    <em className={`registry-status ${statusTone(row.status)}`}>{row.status}</em>
-                  </article>
-                )) : <p className="empty-state-inline">Nu exista documente trimise catre acest contribuabil.</p>}
+            <div className="taxpayer-modal-actions">
+              <Link className="secondary-button" href={`/institutie/cetateni/${detailTaxpayer.id}`}>
+                Profil contribuabil <ArrowUpRight size={16} />
+              </Link>
+            </div>
+            <div className="taxpayer-history-grid">
+              <div>
+                <h3>Documente primite de la contribuabil</h3>
+                <div className="taxpayer-history-list">
+                  {detailIncoming.length ? detailIncoming.map((row) => (
+                    <article key={row.id}>
+                      <FileInput size={18} />
+                      <span><strong>{row.packageName}</strong><small>{row.date} · {row.documents.join(", ")}</small></span>
+                      <em className={`registry-status ${statusTone(row.status)}`}>{row.status}</em>
+                    </article>
+                  )) : <p className="empty-state-inline">Nu exista documente primite de la acest contribuabil.</p>}
+                </div>
+              </div>
+              <div>
+                <h3>Documente trimise catre contribuabil</h3>
+                <div className="taxpayer-history-list">
+                  {detailOutgoing.length ? detailOutgoing.map((row) => (
+                    <article key={row.id}>
+                      <FileOutput size={18} />
+                      <span><strong>{row.packageName}</strong><small>{row.date} · {row.documents.join(", ")}</small></span>
+                      <em className={`registry-status ${statusTone(row.status)}`}>{row.status}</em>
+                    </article>
+                  )) : <p className="empty-state-inline">Nu exista documente trimise catre acest contribuabil.</p>}
+                </div>
               </div>
             </div>
-          </div>
-        </section>
+          </section>
+        </div>
       ) : null}
     </div>
   );

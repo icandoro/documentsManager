@@ -6,6 +6,9 @@ export type PlatformInstitution = {
   type: "primarie" | "institutie";
   status: "activa" | "in_verificare";
   taxpayers: number;
+  verificationStatus?: "approved" | "pending_documents" | "renewal_due";
+  lastDocumentReviewAt?: string;
+  nextDocumentReviewDueAt?: string;
 };
 
 export type TaxpayerPerson = {
@@ -15,6 +18,27 @@ export type TaxpayerPerson = {
   locality: string;
   institutionId: string;
   status: "legat" | "nelegat";
+  linkedUserId?: string | null;
+  firstName?: string;
+  lastName?: string;
+  phone?: string;
+  email?: string;
+  ciSeries?: string;
+  ciNumber?: string;
+  ciIssuedAt?: string;
+  birthDate?: string;
+  birthPlace?: string;
+  country?: string;
+  county?: string;
+  street?: string;
+  streetNumber?: string;
+  buildingNumber?: string;
+  floor?: string;
+  apartment?: string;
+  postalCode?: string;
+  latitude?: string;
+  longitude?: string;
+  accountKind?: "resident" | "property_owner";
 };
 
 export type TaxpayerCompany = {
@@ -24,6 +48,20 @@ export type TaxpayerCompany = {
   locality: string;
   institutionId: string;
   status: "legat" | "nelegat";
+  linkedUserId?: string | null;
+  phone?: string;
+  email?: string;
+  country?: string;
+  county?: string;
+  street?: string;
+  streetNumber?: string;
+  buildingNumber?: string;
+  floor?: string;
+  apartment?: string;
+  postalCode?: string;
+  latitude?: string;
+  longitude?: string;
+  accountKind?: "company_hq" | "company_property_owner";
 };
 
 export type PlatformUserRole = "user" | "admin" | "superadmin";
@@ -70,6 +108,9 @@ export const defaultPlatformInstitutions: PlatformInstitution[] = [
     type: "primarie",
     status: "activa",
     taxpayers: 2,
+    verificationStatus: "approved",
+    lastDocumentReviewAt: "2026-07-01",
+    nextDocumentReviewDueAt: "2027-07-01",
   },
   {
     id: "primaria-pleasov",
@@ -79,6 +120,9 @@ export const defaultPlatformInstitutions: PlatformInstitution[] = [
     type: "primarie",
     status: "activa",
     taxpayers: 2,
+    verificationStatus: "approved",
+    lastDocumentReviewAt: "2026-07-01",
+    nextDocumentReviewDueAt: "2027-07-01",
   },
 ];
 

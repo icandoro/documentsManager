@@ -149,6 +149,74 @@ function imageFileToAvatar(file: File) {
   });
 }
 
+function loadImageFromFile(file: File) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    const reader = new FileReader();
+
+    reader.onerror = () => reject(new Error("Nu am putut citi imaginea."));
+    reader.onload = () => {
+      image.onerror = () => reject(new Error("Imaginea nu poate fi procesata."));
+      image.onload = () => resolve(image);
+      image.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function enhanceImageForOcr(canvas: HTMLCanvasElement) {
+  const context = canvas.getContext("2d");
+  if (!context) return;
+
+  const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imageData.data;
+
+  for (let index = 0; index < data.length; index += 4) {
+    const gray = data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114;
+    const contrasted = Math.max(0, Math.min(255, (gray - 128) * 1.24 + 138));
+    data[index] = contrasted;
+    data[index + 1] = contrasted;
+    data[index + 2] = contrasted;
+  }
+
+  context.putImageData(imageData, 0, 0);
+}
+
+async function prepareIdentityImageForOcr(file: File) {
+  const image = await loadImageFromFile(file);
+  const longestSide = Math.max(image.naturalWidth, image.naturalHeight);
+  const targetLongestSide = Math.min(2800, Math.max(1800, longestSide));
+  const scale = targetLongestSide / longestSide;
+  const width = Math.round(image.naturalWidth * scale);
+  const height = Math.round(image.naturalHeight * scale);
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    return { file, previewUrl: URL.createObjectURL(file) };
+  }
+
+  canvas.width = width;
+  canvas.height = height;
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, width, height);
+  context.drawImage(image, 0, 0, width, height);
+  enhanceImageForOcr(canvas);
+
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png", 0.98));
+
+  if (!blob) {
+    return { file, previewUrl: URL.createObjectURL(file) };
+  }
+
+  return {
+    file: new File([blob], file.name.replace(/\.[^.]+$/, "") + "-ocr.png", { type: "image/png" }),
+    previewUrl: URL.createObjectURL(blob),
+  };
+}
+
 export function AuthForm({ mode }: AuthFormProps) {
   const router = useRouter();
   const isLogin = mode === "login";
@@ -231,7 +299,15 @@ export function AuthForm({ mode }: AuthFormProps) {
       window.URL.revokeObjectURL(identityPreview);
     }
 
-    setIdentityPreview(window.URL.createObjectURL(file));
+    let prepared: { file: File; previewUrl: string };
+
+    try {
+      prepared = await prepareIdentityImageForOcr(file);
+    } catch {
+      prepared = { file, previewUrl: window.URL.createObjectURL(file) };
+    }
+
+    setIdentityPreview(prepared.previewUrl);
     try {
       setIdentityAvatarUrl(await imageFileToAvatar(file));
     } catch {
@@ -243,7 +319,7 @@ export function AuthForm({ mode }: AuthFormProps) {
 
     try {
       const form = new FormData();
-      form.append("identity", file);
+      form.append("identity", prepared.file);
       const response = await fetch("/api/ocr/identity", {
         method: "POST",
         body: form,
@@ -299,7 +375,7 @@ export function AuthForm({ mode }: AuthFormProps) {
         return;
       }
 
-      if (data.manualEntryAllowed) {
+      if (data.manualEntryAllowed && !["found", "demo_fallback"].includes(data.lookupStatus)) {
         updateCompanyField("cif", normalizedCif);
         showNotice("info", data.message ?? "Preluarea automata nu este disponibila acum. Completeaza manual campurile si poti continua.");
         return;
@@ -409,6 +485,17 @@ export function AuthForm({ mode }: AuthFormProps) {
         }
 
         showNotice("error", data.message ?? (isRegister ? "Contul nu a putut fi creat." : "Autentificarea nu a reusit."));
+        return;
+      }
+
+      if (!isRegister && data.requiresTwoFactor) {
+        window.localStorage.setItem("docmanager_2fa_challenge", JSON.stringify({
+          email,
+          maskedEmail: data.maskedEmail ?? email,
+          challengeToken: data.challengeToken,
+        }));
+        showNotice("info", data.message ?? "Continua cu verificarea in doi pasi.");
+        setTimeout(() => router.push("/auth/two-factor"), 500);
         return;
       }
 
@@ -541,9 +628,11 @@ export function AuthForm({ mode }: AuthFormProps) {
                   <div className="identity-reader-grid">
                     <div className="identity-upload-stack">
                       <label className="identity-upload-card">
-                        <input type="file" accept="image/*" onChange={(event) => handleIdentityUpload(event.target.files?.[0] ?? null)} />
+                        <input type="file" accept="image/*" capture="environment" onChange={(event) => handleIdentityUpload(event.target.files?.[0] ?? null)} />
                         {identityPreview ? (
-                          <img src={identityPreview} alt="Preview buletin incarcat" />
+                          <span className="identity-preview-frame">
+                            <img src={identityPreview} alt="Preview buletin incarcat" />
+                          </span>
                         ) : (
                           <span><UploadCloud size={28} /> Incarca poza buletin</span>
                         )}
@@ -630,7 +719,6 @@ export function AuthForm({ mode }: AuthFormProps) {
           )}
           <label>Email<input name="email" type="email" placeholder="nume@example.com" required value={isLogin ? loginCredentials.email : undefined} onChange={isLogin ? (event) => setLoginCredentials((current) => ({ ...current, email: event.target.value })) : undefined} /></label>
           {mode !== "forgot" && <label>Parola<input name="password" type="password" placeholder="Minim 8 caractere" minLength={8} required value={isLogin ? loginCredentials.password : undefined} onChange={isLogin ? (event) => setLoginCredentials((current) => ({ ...current, password: event.target.value })) : undefined} /></label>}
-          {isLogin && <label>Cod 2FA<input inputMode="numeric" placeholder="Optional, daca este activ" /></label>}
           <button className="primary-button" type="submit" disabled={isSubmitting}>
             {isSubmitting ? "Se trimite..." : isLogin ? "Intra in cont" : isRegister ? "Creeaza cont" : "Trimite link resetare"}
           </button>

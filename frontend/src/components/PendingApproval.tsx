@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Hourglass, MailCheck, ShieldCheck } from "lucide-react";
+import { ArrowLeft, CheckCircle2, FileCheck2, Hourglass, Info, MailCheck, ShieldCheck, Stamp } from "lucide-react";
 import { useEffect, useState } from "react";
 
 type OnboardingState = {
@@ -22,18 +22,19 @@ export function PendingApproval() {
   }, []);
 
   return (
-    <main className="auth-page">
+    <main className="auth-page approval-page-shell">
       <Link href="/" className="brand">
         <span className="brand-mark">DM</span>
         <span>DocManager</span>
       </Link>
       <section className="approval-panel">
-        <span className="verification-icon"><Hourglass size={34} /></span>
-        <p className="eyebrow">Cont in verificare</p>
-        <h1>Contul dvs. asteapta verificarea documentelor si aprobarea lor</h1>
-        <p className="muted">
-          Documentele institutiei au fost trimise. Pana cand un administrator aproba contul, accesul in zona de lucru ramane blocat.
-        </p>
+        <div className="approval-compact-head">
+          <p className="eyebrow">Cont in verificare</p>
+          <h1>Cont in verificare</h1>
+          <p>
+            Contul dvs. institutional asteapta verificarea documentelor si aprobarea administratorului.
+          </p>
+        </div>
 
         <div className="approval-summary">
           <span><ShieldCheck size={18} /> {state?.company?.name || "Institutia inrolata"}</span>
@@ -41,13 +42,47 @@ export function PendingApproval() {
           <span><MailCheck size={18} /> {state?.email || "Email confirmat"}</span>
         </div>
 
-        <div className="timeline-list">
-          <span className="done"><MailCheck size={18} /> Email confirmat</span>
-          <span className="done"><ShieldCheck size={18} /> Documente trimise</span>
-          <span><Hourglass size={18} /> Asteapta verificarea administratorului</span>
+        <div className="approval-steps" aria-label="Status verificare cont">
+          <article className="approval-step done">
+            <span className="step-number"><CheckCircle2 size={22} /></span>
+            <strong>Email confirmat</strong>
+            <p>Adresa de email a fost validata cu succes.</p>
+          </article>
+          <article className="approval-step done">
+            <span className="step-number"><FileCheck2 size={22} /></span>
+            <strong>Documente trimise</strong>
+            <p>Toate fisierele necesare sunt in sistem.</p>
+          </article>
+          <article className="approval-step active">
+            <span className="step-number"><Hourglass size={22} /></span>
+            <strong>Asteapta aprobarea</strong>
+            <p>Echipa noastra revizuieste datele furnizate pentru activarea contului.</p>
+            <span className="approval-pulse">In procesare</span>
+          </article>
         </div>
 
-        <Link className="secondary-button" href="/">Inapoi la prezentare</Link>
+        <div className="approval-mobile-visual" aria-hidden="true">
+          <div className="approval-browser-mock">
+            <span className="mock-dot" />
+            <span className="mock-dot" />
+            <span className="mock-dot" />
+            <div>
+              <Stamp size={34} />
+              <strong>Verificare documente</strong>
+              <small>Operatorul valideaza institutia</small>
+            </div>
+          </div>
+        </div>
+
+        <p className="approval-info-pill"><Info size={16} /> Procesul de verificare poate dura pana la 24 de ore lucratoare.</p>
+
+        <Link className="approval-back-button" href="/"><ArrowLeft size={18} /> Inapoi la prezentare</Link>
+
+        <div className="approval-dots" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </div>
       </section>
     </main>
   );

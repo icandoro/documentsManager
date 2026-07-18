@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Bell, Building2, CheckCircle2, ChevronDown, FileInput, FileOutput, Files, Grid3X3, HelpCircle, Home, Info, Landmark, LogOut, Menu, Search, Settings, Shield, ShieldAlert, ShieldCheck, Upload, UserCog, UserRound, X, type LucideIcon } from "lucide-react";
+import { Bell, Building2, CheckCircle2, ChevronDown, ClipboardList, FileInput, FileOutput, Files, Grid3X3, HelpCircle, Home, Info, Landmark, LogOut, Menu, Search, Settings, Shield, ShieldAlert, ShieldCheck, Upload, UserCog, UserRound, UsersRound, X, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   AccountContext,
@@ -47,10 +47,26 @@ const superAdminOnlyNav: NavItem[] = [
   { href: "/admin#relations", label: "Imports", icon: FileInput },
 ];
 
+const institutionNav: NavItem[] = [
+  { href: "/dashboard", label: "Registratura", icon: ClipboardList },
+  { href: "/institutie/cetateni", label: "Cetateni si companii", icon: UsersRound },
+  { href: "/documents/received", label: "Documente intrate", icon: FileInput },
+  { href: "/documents/sent", label: "Documente trimise", icon: FileOutput },
+  { href: "/documents", label: "Documente", icon: Files, children: [
+    { href: "/documents", label: "Fisiere institutiei" },
+    { href: "/documents/templates", label: "Sabloane" },
+  ] },
+  { href: "/profile", label: "Profil institutie", icon: Building2 },
+  { href: "/profile#security", label: "Security", icon: Shield },
+];
+
 type StoredUser = {
+  id?: string;
   name?: string;
   email?: string;
   role?: string;
+  accountType?: "individual" | "company" | "institution";
+  linkedInstitutionIds?: string[];
   avatarUrl?: string;
 };
 
@@ -298,14 +314,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   const isSuperAdmin = role === "superadmin";
+  const isInstitutionAccount = user.accountType === "institution";
+  const institutionContextId = user.linkedInstitutionIds?.[0];
+  const institutionContext = contexts.find((context) => context.id === institutionContextId);
   const isDocumentsWorkspace = pathname.startsWith("/documents");
   const isAdminWorkspace = pathname.startsWith("/admin");
-  const visibleNav = isSuperAdmin ? superAdminOnlyNav : [...nav, ...(role === "admin" ? [superAdminNav] : [])];
+  const visibleNav = isSuperAdmin ? superAdminOnlyNav : isInstitutionAccount ? institutionNav : [...nav, ...(role === "admin" ? [superAdminNav] : [])];
   const unreadCount = unreadNotificationsCount(notifications);
   const moduleLinks = isSuperAdmin ? [
     { href: "/admin#users", label: "Utilizatori", icon: UserRound },
     { href: "/admin#institutions", label: "Institutii", icon: Landmark },
     { href: "/admin#relations", label: "Importuri", icon: FileInput },
+    { href: "/notifications", label: "Alerte", icon: Bell },
+  ] : isInstitutionAccount ? [
+    { href: "/dashboard", label: "Registratura", icon: ClipboardList },
+    { href: "/institutie/cetateni", label: "Cetateni si companii", icon: UsersRound },
+    { href: "/documents/received", label: "Documente intrate", icon: FileInput },
     { href: "/notifications", label: "Alerte", icon: Bell },
   ] : [
     { href: "/documents", label: "Documente", icon: Files },
@@ -313,6 +337,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     { href: "/documents/received", label: "Primite", icon: FileInput },
     { href: "/notifications", label: "Alerte", icon: Bell },
   ];
+
+  useEffect(() => {
+    if (!isInstitutionAccount || !institutionContextId || activeContextId === institutionContextId) {
+      return;
+    }
+
+    setActiveContextId(institutionContextId);
+    writeActiveAccountContextId(institutionContextId);
+    window.dispatchEvent(new Event("docmanager-account-context-change"));
+  }, [activeContextId, institutionContextId, isInstitutionAccount]);
 
   const globalSearchResults = useMemo(() => {
     if (typeof window === "undefined") return [];
@@ -380,6 +414,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         });
       });
     } else {
+      if (isInstitutionAccount) {
+        readTaxpayerPersons().filter((person) => person.institutionId === activeContextId).forEach((person) => {
+          results.push({
+            id: `institution-person-${person.id}`,
+            title: person.name,
+            description: `CNP ${person.cnp} · ${person.locality} · ${person.status}`,
+            href: "/institutie/cetateni",
+            type: "admin",
+            icon: UserRound,
+          });
+        });
+        readTaxpayerCompanies().filter((company) => company.institutionId === activeContextId).forEach((company) => {
+          results.push({
+            id: `institution-company-${company.id}`,
+            title: company.name,
+            description: `CUI ${company.cif} · ${company.locality} · ${company.status}`,
+            href: "/institutie/cetateni",
+            type: "admin",
+            icon: Building2,
+          });
+        });
+      }
       readSearchDocuments(activeContextId).forEach((document) => {
         results.push({
           id: `document-${document.id}`,
@@ -427,7 +483,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
 
     return results.filter((result) => matchesSearch(result, globalSearchQuery)).slice(0, 8);
-  }, [activeContextId, contexts, globalSearchQuery, isSuperAdmin, moduleLinks, notifications]);
+  }, [activeContextId, contexts, globalSearchQuery, isInstitutionAccount, isSuperAdmin, moduleLinks, notifications]);
 
   function handleSearchResult(result: GlobalSearchResult) {
     setGlobalSearchQuery("");
@@ -550,7 +606,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   handleSearchResult(globalSearchResults[0]);
                 }
               }}
-              placeholder={isSuperAdmin ? "Cauta utilizatori, CNP, CIF sau institutii..." : "Cauta documente, utilizatori sau activitati..."}
+              placeholder={isSuperAdmin ? "Cauta utilizatori, CNP, CIF sau institutii..." : isInstitutionAccount ? "Cauta cetateni, CNP, CUI sau documente..." : "Cauta documente, utilizatori sau activitati..."}
             />
             {globalSearchQuery && (
               <button className="global-search-clear" type="button" aria-label="Sterge cautarea" onMouseDown={(event) => event.preventDefault()} onClick={() => {
@@ -592,7 +648,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </div>
             )}
           </label>
-          {!isSuperAdmin && (
+          {!isSuperAdmin && !isInstitutionAccount && (
             <label className="context-switcher">
               <Building2 size={17} />
               <select value={activeContextId} onChange={(event) => handleContextChange(event.target.value)}>
@@ -601,6 +657,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 ))}
               </select>
             </label>
+          )}
+          {isInstitutionAccount && (
+            <span className="context-switcher static-context">
+              <Building2 size={17} />
+              <strong>{institutionContext?.name ?? user.name ?? "Institutie"}</strong>
+            </span>
           )}
           {isSuperAdmin && <span className="system-pill"><i /> Sistem: operational</span>}
           <div className="topbar-actions">

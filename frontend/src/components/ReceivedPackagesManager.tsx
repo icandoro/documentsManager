@@ -2,7 +2,7 @@
 
 import { readAccountContexts, readActiveAccountContextId } from "@/lib/institutions";
 import { normalizePackageDocument, PackageGroup, readReceivedPackages, ReceivedPackageGroup, statusTone, writeReceivedPackages } from "@/lib/packages";
-import { CheckCircle2, ChevronLeft, ChevronRight, Download, FileInput, FileSignature, Search, Trash2, UploadCloud, X } from "lucide-react";
+import { CheckCircle2, ChevronLeft, ChevronRight, Download, FileInput, FileSignature, Search, SlidersHorizontal, Trash2, UploadCloud, X } from "lucide-react";
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -126,6 +126,7 @@ export function ReceivedPackagesManager() {
   const [deletedDocumentKeys, setDeletedDocumentKeys] = useState<string[]>([]);
   const [page, setPage] = useState(1);
   const [activeContextId, setActiveContextId] = useState("independent");
+  const [isFilterDrawerOpen, setIsFilterDrawerOpen] = useState(false);
 
   useEffect(() => {
     function syncContextPackages() {
@@ -301,7 +302,15 @@ export function ReceivedPackagesManager() {
 
   return (
     <>
-      <section className="list-controls panel">
+      <button className="mobile-filter-trigger" type="button" onClick={() => setIsFilterDrawerOpen(true)}>
+        <SlidersHorizontal size={18} /> Filtreaza documentele primite
+      </button>
+      <section className={`mobile-filter-backdrop ${isFilterDrawerOpen ? "open" : ""}`} onClick={() => setIsFilterDrawerOpen(false)} aria-hidden={!isFilterDrawerOpen} />
+      <section className={`list-controls panel mobile-filter-drawer ${isFilterDrawerOpen ? "open" : ""}`}>
+        <div className="mobile-filter-head">
+          <strong>Filtre documente primite</strong>
+          <button className="icon-button" type="button" aria-label="Inchide filtrele" onClick={() => setIsFilterDrawerOpen(false)}><X size={18} /></button>
+        </div>
         <label className="compact-select search-filter">Cautare
           <span><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Pachet, document sau expeditor" /></span>
         </label>
@@ -326,6 +335,9 @@ export function ReceivedPackagesManager() {
         </label>
         <button className="secondary-button" type="button" onClick={() => { setQuery(""); setStatusFilter("all"); setPurposeFilter("all"); setReceivedDateFilter(""); setSignedDateFilter(""); }}>
           Reseteaza
+        </button>
+        <button className="primary-button mobile-apply-filters" type="button" onClick={() => setIsFilterDrawerOpen(false)}>
+          Aplica filtre
         </button>
       </section>
 

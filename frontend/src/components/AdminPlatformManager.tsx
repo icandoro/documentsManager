@@ -14,10 +14,40 @@ import {
   writeTaxpayerCompanies,
   writeTaxpayerPersons,
 } from "@/lib/adminData";
-import { Building2, CheckCircle2, Database, Download, FileInput, FileOutput, FileUp, Gavel, Landmark, Link2, MapPin, MoreVertical, Network, Search, Shield, ShieldAlert, SlidersHorizontal, UserPlus, UserRound, X } from "lucide-react";
+import { Building2, CheckCircle2, Clock3, Database, Download, FileCheck2, FileInput, FileOutput, FileUp, Gavel, Landmark, Link2, MapPin, MoreVertical, Network, RefreshCw, Search, Shield, ShieldAlert, SlidersHorizontal, UserPlus, UserRound, X } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 
 type AdminTab = "users" | "institutions" | "persons" | "companies" | "relations";
+
+type LocalAccount = {
+  email: string;
+  password: string;
+  user: PlatformUser;
+};
+
+type PendingInstitutionOnboarding = {
+  email?: string | null;
+  company?: {
+    name?: string;
+    cif?: string;
+  } | null;
+  documents?: Record<string, string>;
+  status?: string;
+  submittedAt?: string;
+};
+
+type InstitutionApprovalRequest = {
+  id: string;
+  name: string;
+  email: string;
+  cif: string;
+  submittedAt?: string;
+  documents?: Record<string, string>;
+  user: PlatformUser | null;
+};
+
+const localAccountsStorageKey = "docmanager_local_accounts";
 
 function tabFromHash(hash: string): AdminTab {
   const value = hash.replace("#", "");
@@ -42,6 +72,55 @@ function readStoredRole() {
   return window.localStorage.getItem("docmanager_user_role") ?? "user";
 }
 
+function readLocalAccounts() {
+  if (typeof window === "undefined") return [];
+
+  const saved = window.localStorage.getItem(localAccountsStorageKey);
+  if (!saved) return [];
+
+  try {
+    const parsed = JSON.parse(saved) as LocalAccount[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    window.localStorage.removeItem(localAccountsStorageKey);
+    return [];
+  }
+}
+
+function writeLocalAccounts(accounts: LocalAccount[]) {
+  window.localStorage.setItem(localAccountsStorageKey, JSON.stringify(accounts));
+}
+
+function readPendingInstitutionOnboarding(): PendingInstitutionOnboarding | null {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const saved = window.localStorage.getItem("docmanager_institution_onboarding");
+    return saved ? JSON.parse(saved) as PendingInstitutionOnboarding : null;
+  } catch {
+    return null;
+  }
+}
+
+function mergeUsersWithLocalAccounts(users: PlatformUser[]) {
+  const localUsers = readLocalAccounts().map((account) => account.user);
+  const existingEmails = new Set(users.map((user) => user.email.toLowerCase()));
+
+  return [...users, ...localUsers.filter((user) => !existingEmails.has(user.email.toLowerCase()))];
+}
+
+function nextReviewDate(from = new Date()) {
+  const next = new Date(from);
+  next.setFullYear(next.getFullYear() + 1);
+  return next.toISOString().slice(0, 10);
+}
+
+function isReviewDue(institution: PlatformInstitution) {
+  if (!institution.nextDocumentReviewDueAt) return false;
+
+  return new Date(institution.nextDocumentReviewDueAt) <= new Date();
+}
+
 export function AdminPlatformManager() {
   const [role, setRole] = useState("user");
   const [tab, setTab] = useState<AdminTab>("users");
@@ -53,6 +132,7 @@ export function AdminPlatformManager() {
   const [selectedUser, setSelectedUser] = useState<PlatformUser | null>(null);
   const [roleFilter, setRoleFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [pendingOnboarding, setPendingOnboarding] = useState<PendingInstitutionOnboarding | null>(null);
 
   useEffect(() => {
     function syncRole() {
@@ -61,9 +141,10 @@ export function AdminPlatformManager() {
 
     syncRole();
     setInstitutions(readPlatformInstitutions());
-    setUsers(readPlatformUsers());
+    setUsers(mergeUsersWithLocalAccounts(readPlatformUsers()));
     setPersons(readTaxpayerPersons());
     setCompanies(readTaxpayerCompanies());
+    setPendingOnboarding(readPendingInstitutionOnboarding());
     window.localStorage.setItem("docmanager_user_role", readStoredRole());
     window.addEventListener("storage", syncRole);
 
@@ -120,6 +201,40 @@ export function AdminPlatformManager() {
       [item.name, item.cif, item.locality, item.status].some((value) => value.toLowerCase().includes(normalized)),
     );
   }, [companies, query]);
+
+  const pendingInstitutionUsers = useMemo(() => {
+    return users.filter((user) => user.accountType === "institution" && user.status === "in_verificare");
+  }, [users]);
+
+  const dueInstitutions = useMemo(() => {
+    return institutions.filter((institution) => isReviewDue(institution) || institution.verificationStatus === "renewal_due");
+  }, [institutions]);
+
+  const pendingInstitutionRequests = useMemo(() => {
+    const requests: InstitutionApprovalRequest[] = pendingInstitutionUsers.map((user) => ({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      cif: user.cif ?? "-",
+      submittedAt: pendingOnboarding?.email === user.email ? pendingOnboarding.submittedAt : undefined,
+      documents: pendingOnboarding?.email === user.email ? pendingOnboarding.documents : undefined,
+      user,
+    }));
+
+    if (pendingOnboarding?.status === "pending_admin_review" && pendingOnboarding.email && !requests.some((request) => request.email === pendingOnboarding.email)) {
+      requests.unshift({
+        id: `pending-${pendingOnboarding.email}`,
+        name: pendingOnboarding.company?.name ?? "Institutie in verificare",
+        email: pendingOnboarding.email,
+        cif: pendingOnboarding.company?.cif ?? "-",
+        submittedAt: pendingOnboarding.submittedAt,
+        documents: pendingOnboarding.documents,
+        user: null,
+      });
+    }
+
+    return requests;
+  }, [pendingInstitutionUsers, pendingOnboarding]);
 
   function handleInstitutionSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -290,6 +405,75 @@ export function AdminPlatformManager() {
     writePlatformUsers(nextUsers);
   }
 
+  function persistUserStatusByEmail(email: string, nextStatus: PlatformUser["status"]) {
+    const normalizedEmail = email.toLowerCase();
+    const nextUsers = users.map((user) => user.email.toLowerCase() === normalizedEmail ? { ...user, status: nextStatus } : user);
+    const nextLocalAccounts = readLocalAccounts().map((account) =>
+      account.email.toLowerCase() === normalizedEmail ? { ...account, user: { ...account.user, status: nextStatus } } : account,
+    );
+
+    setUsers(nextUsers);
+    writePlatformUsers(nextUsers.filter((user) => readPlatformUsers().some((defaultUser) => defaultUser.id === user.id)));
+    writeLocalAccounts(nextLocalAccounts);
+  }
+
+  function approveInstitutionRequest(email: string, name: string, cif: string) {
+    persistUserStatusByEmail(email, "activ");
+
+    const existingInstitution = institutions.find((institution) => institution.cif.replace(/^RO/i, "") === cif.replace(/^RO/i, ""));
+    const now = new Date();
+    const nextInstitutions = existingInstitution
+      ? institutions.map((institution) => institution.id === existingInstitution.id ? {
+        ...institution,
+        status: "activa" as const,
+        verificationStatus: "approved" as const,
+        lastDocumentReviewAt: now.toISOString().slice(0, 10),
+        nextDocumentReviewDueAt: nextReviewDate(now),
+      } : institution)
+      : [{
+        id: `institution-${Date.now()}`,
+        name,
+        locality: "Nespecificata",
+        cif,
+        type: "institutie" as const,
+        status: "activa" as const,
+        taxpayers: 0,
+        verificationStatus: "approved" as const,
+        lastDocumentReviewAt: now.toISOString().slice(0, 10),
+        nextDocumentReviewDueAt: nextReviewDate(now),
+      }, ...institutions];
+
+    setInstitutions(nextInstitutions);
+    writePlatformInstitutions(nextInstitutions);
+
+    if (pendingOnboarding?.email === email) {
+      const nextOnboarding = { ...pendingOnboarding, status: "approved" };
+      window.localStorage.setItem("docmanager_institution_onboarding", JSON.stringify(nextOnboarding));
+      setPendingOnboarding(nextOnboarding);
+    }
+
+    toast.success("Institutia a fost aprobata. Contul este activ.");
+  }
+
+  function rejectInstitutionRequest(email: string) {
+    persistUserStatusByEmail(email, "suspendat");
+    toast.info("Solicitarea institutiei a fost marcata ca respinsa/suspendata.");
+  }
+
+  function confirmAnnualReview(institutionId: string) {
+    const now = new Date();
+    const nextInstitutions = institutions.map((institution) => institution.id === institutionId ? {
+      ...institution,
+      verificationStatus: "approved" as const,
+      lastDocumentReviewAt: now.toISOString().slice(0, 10),
+      nextDocumentReviewDueAt: nextReviewDate(now),
+    } : institution);
+
+    setInstitutions(nextInstitutions);
+    writePlatformInstitutions(nextInstitutions);
+    toast.success("Revizuirea anuala a fost confirmata pentru urmatoarele 12 luni.");
+  }
+
   if (!canManageUsers) {
     return (
       <section className="approval-panel">
@@ -335,7 +519,7 @@ export function AdminPlatformManager() {
             <article>
               <div className="admin-stat-icon cool"><Gavel size={24} /></div>
               <span>Pending Requests</span>
-              <strong>{users.filter((item) => item.status === "in_verificare").length.toLocaleString("ro-RO")}</strong>
+              <strong>{(users.filter((item) => item.status === "in_verificare").length + (pendingOnboarding?.status === "pending_admin_review" ? 1 : 0)).toLocaleString("ro-RO")}</strong>
               <p>Action Needed</p>
             </article>
             <article>
@@ -527,31 +711,87 @@ export function AdminPlatformManager() {
       )}
 
       {tab === "institutions" && (
-        <section className="admin-grid">
-          <form className="panel admin-form" onSubmit={handleInstitutionSubmit}>
-            <h2>Adauga institutie</h2>
-            <label>Denumire<input name="name" placeholder="Primaria ..." required /></label>
-            <label>Localitate<input name="locality" placeholder="Localitate" required /></label>
-            <label>CIF institutie<input name="cif" placeholder="CIF" required /></label>
-            <label>Tip<select name="type" defaultValue="primarie"><option value="primarie">Primarie / UAT</option><option value="institutie">Institutie</option></select></label>
-            <button className="primary-button" type="submit">Salveaza institutie</button>
-          </form>
-          <div className="admin-table panel">
-            <div className="admin-user-head institutions-head">
-              <span>Institutie</span>
-              <span>Localitate</span>
-              <span>CIF</span>
-              <span>Status</span>
+        <>
+          <section className="institution-approval-grid">
+            <article className="institution-approval-card primary-review">
+              <header>
+                <span><ShieldAlert size={24} /></span>
+                <div>
+                  <p className="eyebrow">Aprobari institutii</p>
+                  <h2>Asteapta verificare administrator</h2>
+                </div>
+              </header>
+              {pendingInstitutionRequests.length === 0 ? (
+                <p className="empty-state">Nu exista institutii in asteptare.</p>
+              ) : pendingInstitutionRequests.map((request) => (
+                <div className="institution-request-row" key={request.id}>
+                  <span className="admin-avatar-chip">{request.name.slice(0, 2).toUpperCase()}</span>
+                  <div>
+                    <strong>{request.name}</strong>
+                    <small>{request.email} · CIF {request.cif} · trimis {request.submittedAt ? new Date(request.submittedAt).toLocaleDateString("ro-RO") : "recent"}</small>
+                    <em>{request.documents ? Object.values(request.documents).filter(Boolean).length : 0} documente incarcate</em>
+                  </div>
+                  <button className="secondary-button" type="button">Vezi documente</button>
+                  <button className="primary-button" type="button" onClick={() => approveInstitutionRequest(request.email, request.name, request.cif)}>Aproba</button>
+                  <button className="secondary-button danger-action" type="button" onClick={() => rejectInstitutionRequest(request.email)}>Respinge</button>
+                </div>
+              ))}
+            </article>
+            <article className="institution-approval-card renewal-review">
+              <header>
+                <span><RefreshCw size={24} /></span>
+                <div>
+                  <p className="eyebrow">Revalidare anuala</p>
+                  <h2>Actualizare documente la 12 luni</h2>
+                </div>
+              </header>
+              <p className="muted">Institutiile trebuie sa actualizeze documentele sau sa confirme ca nu s-a schimbat nimic o data la 12 luni.</p>
+              {dueInstitutions.length === 0 ? (
+                <p className="empty-state">Toate institutiile sunt in termen.</p>
+              ) : dueInstitutions.map((institution) => (
+                <div className="renewal-row" key={institution.id}>
+                  <Clock3 size={18} />
+                  <div>
+                    <strong>{institution.name}</strong>
+                    <small>Scadent: {institution.nextDocumentReviewDueAt ?? "nesetat"}</small>
+                  </div>
+                  <button className="secondary-button" type="button" onClick={() => confirmAnnualReview(institution.id)}>Confirma neschimbat</button>
+                </div>
+              ))}
+            </article>
+          </section>
+
+          <section className="admin-grid">
+            <form className="panel admin-form" onSubmit={handleInstitutionSubmit}>
+              <h2>Adauga institutie</h2>
+              <label>Denumire<input name="name" placeholder="Primaria ..." required /></label>
+              <label>Localitate<input name="locality" placeholder="Localitate" required /></label>
+              <label>CIF institutie<input name="cif" placeholder="CIF" required /></label>
+              <label>Tip<select name="type" defaultValue="primarie"><option value="primarie">Primarie / UAT</option><option value="institutie">Institutie</option></select></label>
+              <button className="primary-button" type="submit">Salveaza institutie</button>
+            </form>
+            <div className="admin-table panel">
+              <div className="admin-user-head institutions-head">
+                <span>Institutie</span>
+                <span>Localitate</span>
+                <span>CIF</span>
+                <span>Status</span>
+              </div>
+              {filteredInstitutions.map((institution) => (
+                <article key={institution.id}>
+                  <Landmark size={20} />
+                  <div>
+                    <strong>{institution.name}</strong>
+                    <span>{institution.locality} · CIF {institution.cif}</span>
+                    <small>Ultima verificare: {institution.lastDocumentReviewAt ?? "nesetat"} · urmatoarea: {institution.nextDocumentReviewDueAt ?? "nesetat"}</small>
+                  </div>
+                  <span className={`status-chip ${institution.status === "activa" ? "received" : "waiting"}`}>{statusLabel(institution.status)}</span>
+                  <button className="secondary-button" type="button" onClick={() => confirmAnnualReview(institution.id)}><FileCheck2 size={16} /> Confirma 12 luni</button>
+                </article>
+              ))}
             </div>
-            {filteredInstitutions.map((institution) => (
-              <article key={institution.id}>
-                <Landmark size={20} />
-                <div><strong>{institution.name}</strong><span>{institution.locality} · CIF {institution.cif}</span></div>
-                <span className="status-chip received">{statusLabel(institution.status)}</span>
-              </article>
-            ))}
-          </div>
-        </section>
+          </section>
+        </>
       )}
 
       {tab === "persons" && (

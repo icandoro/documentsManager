@@ -9,7 +9,7 @@ import {
   writeContextProfile,
   writeGeneralProfile,
 } from "@/lib/profileData";
-import { Building2, LockKeyhole, MapPin, ShieldCheck, UserRound } from "lucide-react";
+import { Building2, KeyRound, LockKeyhole, MapPin, QrCode, ShieldCheck, Smartphone, UserRound } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -167,7 +167,18 @@ export function ProfileManager() {
           <p>Email si parola, sesiuni pe baza de token JWT si verificare 2FA pentru actiuni sensibile.</p>
           <div className="security-row"><LockKeyhole size={18} /> Parola configurata</div>
           <div className="security-row"><ShieldCheck size={18} /> 2FA recomandat</div>
-          <button className="secondary-button">Configureaza 2FA</button>
+
+          <div className="two-factor-setup-card">
+            <p className="eyebrow">Pregatit pentru activare</p>
+            <h3>Autentificare in doi pasi</h3>
+            <div className="two-factor-setup-steps">
+              <span><QrCode size={18} /> Secret TOTP si QR</span>
+              <span><Smartphone size={18} /> Aplicatie Authenticator</span>
+              <span><KeyRound size={18} /> Cod in pas separat la login</span>
+            </div>
+            <p>Fluxul este implementat, dar ramane dezactivat pana cand decidem sa permitem activarea conturilor.</p>
+          </div>
+          <button className="secondary-button" type="button" disabled>Activare 2FA indisponibila momentan</button>
         </aside>
       </section>
     </>

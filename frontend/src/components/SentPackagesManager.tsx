@@ -2,7 +2,7 @@
 
 import { PackageGroup, normalizePackageDocument, readSentPackages, statusTone } from "@/lib/packages";
 import { readAccountContexts, readActiveAccountContextId } from "@/lib/institutions";
-import { ChevronLeft, ChevronRight, Download, FileSignature, Search, Send, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, FileSignature, Search, Send, SlidersHorizontal, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 const pageSize = 6;
@@ -67,6 +67,7 @@ export function SentPackagesManager() {
   const [signedDateFilter, setSignedDateFilter] = useState("");
   const [selectedRow, setSelectedRow] = useState<SentRow | null>(null);
   const [page, setPage] = useState(1);
+  const [isFilterDrawerOpen, setIsFilterDrawerOpen] = useState(false);
 
   useEffect(() => {
     function syncContextPackages() {
@@ -108,7 +109,15 @@ export function SentPackagesManager() {
 
   return (
     <>
-      <section className="list-controls panel">
+      <button className="mobile-filter-trigger" type="button" onClick={() => setIsFilterDrawerOpen(true)}>
+        <SlidersHorizontal size={18} /> Filtreaza documentele trimise
+      </button>
+      <section className={`mobile-filter-backdrop ${isFilterDrawerOpen ? "open" : ""}`} onClick={() => setIsFilterDrawerOpen(false)} aria-hidden={!isFilterDrawerOpen} />
+      <section className={`list-controls panel mobile-filter-drawer ${isFilterDrawerOpen ? "open" : ""}`}>
+        <div className="mobile-filter-head">
+          <strong>Filtre documente trimise</strong>
+          <button className="icon-button" type="button" aria-label="Inchide filtrele" onClick={() => setIsFilterDrawerOpen(false)}><X size={18} /></button>
+        </div>
         <label className="compact-select search-filter">Cautare
           <span><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Pachet, document sau destinatar" /></span>
         </label>
@@ -133,6 +142,9 @@ export function SentPackagesManager() {
         </label>
         <button className="secondary-button" type="button" onClick={() => { setQuery(""); setStatusFilter("all"); setPurposeFilter("all"); setSentDateFilter(""); setSignedDateFilter(""); }}>
           Reseteaza
+        </button>
+        <button className="primary-button mobile-apply-filters" type="button" onClick={() => setIsFilterDrawerOpen(false)}>
+          Aplica filtre
         </button>
       </section>
 

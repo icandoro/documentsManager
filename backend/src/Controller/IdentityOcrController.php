@@ -67,7 +67,7 @@ final class IdentityOcrController
         $best = [1, '', 'Nu s-a putut porni OCR-ul local.', 'none'];
 
         foreach ($variants as $variantName => $variantPath) {
-            foreach ([6, 11, 4] as $pageSegmentationMode) {
+            foreach ([6, 11, 4, 3] as $pageSegmentationMode) {
                 [$exitCode, $text, $error] = $this->runTesseract($variantPath, $pageSegmentationMode);
                 $candidate = [$exitCode, $text, $error, $variantName.'-psm'.$pageSegmentationMode];
 
@@ -141,6 +141,7 @@ final class IdentityOcrController
         }
         @unlink($base);
 
+        $prepared = $base.'_prepared.png';
         $gray = $base.'_gray.png';
         $threshold = $base.'_threshold.png';
 
@@ -148,8 +149,32 @@ final class IdentityOcrController
             $magick,
             $path,
             '-auto-orient',
+            '-deskew',
+            '40%',
+            '-filter',
+            'Lanczos',
             '-resize',
-            '2600x2600>',
+            '2600x2600',
+            '-normalize',
+            '-unsharp',
+            '0x1.2+1.1+0.02',
+            $prepared,
+        ]);
+
+        if (is_file($prepared) && filesize($prepared) > 0) {
+            $variants['prepared'] = $prepared;
+        }
+
+        $this->runProcess([
+            $magick,
+            $path,
+            '-auto-orient',
+            '-deskew',
+            '40%',
+            '-filter',
+            'Lanczos',
+            '-resize',
+            '3000x3000',
             '-colorspace',
             'Gray',
             '-normalize',
@@ -168,8 +193,12 @@ final class IdentityOcrController
             $magick,
             $path,
             '-auto-orient',
+            '-deskew',
+            '40%',
+            '-filter',
+            'Lanczos',
             '-resize',
-            '3200x3200>',
+            '3200x3200',
             '-colorspace',
             'Gray',
             '-normalize',
@@ -284,6 +313,14 @@ final class IdentityOcrController
         $issuedBy = $this->extractValue($lines, ['ELIBERAT', 'EMIS', 'ISSUED BY']);
         $validUntil = $dateMatches[1] !== [] ? (string) end($dateMatches[1]) : '';
 
+        if ($name === '' && preg_match('/\bNUME(?:\s*\/\s*(?:LAST NAME|NOM))?\s+([A-Z][A-Z\s-]{2,48})\s+\b(?:PRENUME|FIRST NAME|PRENOMS)\b/', $compactFlat, $match)) {
+            $name = $match[1];
+        }
+
+        if ($firstName === '' && preg_match('/\b(?:PRENUME|FIRST NAME|PRENOMS)(?:\s*\/\s*[A-Z\s]+)?\s+([A-Z][A-Z\s-]{2,48})\s+\b(?:CNP|CETATENIE|SEX|NATIONALITATE)\b/', $compactFlat, $match)) {
+            $firstName = $match[1];
+        }
+
         return [
             'lastName' => $this->cleanPersonName($name),
             'firstName' => $this->cleanPersonName($firstName),
@@ -311,17 +348,24 @@ final class IdentityOcrController
                 }
 
                 $parts = preg_split('/'.preg_quote($label, '/').'[:\s-]*/', $line, 2);
-                $value = isset($parts[1]) ? trim($parts[1]) : '';
+                $value = isset($parts[1]) ? $this->cleanLabeledValue(trim($parts[1])) : '';
 
                 if ($value !== '' && strlen($value) > 2) {
                     return $value;
                 }
 
-                return $lines[$index + 1] ?? '';
+                return $this->cleanLabeledValue($lines[$index + 1] ?? '');
             }
         }
 
         return '';
+    }
+
+    private function cleanLabeledValue(string $value): string
+    {
+        $value = preg_replace('/\b(?:LAST NAME|FIRST NAME|PRENOMS|NOM|CNP|SERIA|SERIE|NR\.?|NUMAR|CETATENIE|NATIONALITATE|SEX|LOC NASTERE|DOMICILIU|ADRESA|ELIBERAT|EMIS|VALIDITATE|VALABILITATE)\b.*$/', '', $value) ?? $value;
+
+        return $this->cleanValue($value);
     }
 
     private function extractCounty(string $text): string

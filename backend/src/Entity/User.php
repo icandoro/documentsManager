@@ -128,6 +128,11 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
         return $this;
     }
 
+    public function getTotpSecret(): ?string
+    {
+        return $this->totpSecret;
+    }
+
     public function setProfile(Profile $profile): self
     {
         $this->profile = $profile;

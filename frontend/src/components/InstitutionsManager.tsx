@@ -19,10 +19,21 @@ function contextLabel(type: AccountContext["type"]) {
 export function InstitutionsManager() {
   const [contexts, setContexts] = useState<AccountContext[]>([]);
   const [activeId, setActiveId] = useState("independent");
+  const [isInstitutionAccount, setIsInstitutionAccount] = useState(false);
   const activeContext = contexts.find((context) => context.id === activeId);
 
   useEffect(() => {
     const savedContexts = readAccountContexts();
+    const savedUser = window.localStorage.getItem("docmanager_user");
+
+    if (savedUser) {
+      try {
+        const parsed = JSON.parse(savedUser) as { accountType?: string };
+        setIsInstitutionAccount(parsed.accountType === "institution");
+      } catch {
+        setIsInstitutionAccount(false);
+      }
+    }
 
     setContexts(savedContexts);
     setActiveId(readActiveAccountContextId(savedContexts));
@@ -57,6 +68,10 @@ export function InstitutionsManager() {
     writeAccountContexts(nextContexts);
     activateContext(nextContext.id);
     event.currentTarget.reset();
+  }
+
+  if (isInstitutionAccount) {
+    return null;
   }
 
   return (
