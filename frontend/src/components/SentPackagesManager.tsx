@@ -1,9 +1,10 @@
 "use client";
 
-import { PackageGroup, normalizePackageDocument, readSentPackages, statusTone } from "@/lib/packages";
+import { PackageGroup, normalizePackageDocument, packageDocumentIdentity, readSentPackages, statusTone, writeSentPackages } from "@/lib/packages";
 import { readAccountContexts, readActiveAccountContextId } from "@/lib/institutions";
-import { ChevronLeft, ChevronRight, Download, FileSignature, Search, Send, SlidersHorizontal, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, FileSignature, Search, Send, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 
 const pageSize = 6;
 
@@ -18,6 +19,10 @@ type SentRow = {
   documents: ReturnType<typeof normalizePackageDocument>[];
 };
 
+type DeleteTarget =
+  | { kind: "package"; row: SentRow }
+  | { kind: "document"; row: SentRow; documentId: string; documentTitle: string };
+
 function flattenGroups(groups: PackageGroup[]): SentRow[] {
   return groups.flatMap((group, groupIndex) =>
     group.packages.map((pkg, packageIndex) => ({
@@ -28,7 +33,12 @@ function flattenGroups(groups: PackageGroup[]): SentRow[] {
       date: pkg.date,
       purpose: pkg.purpose === "signature" ? "Trimitere la semnat" : "Doar trimitere",
       status: pkg.status,
-      documents: pkg.documents.map((document) => normalizePackageDocument(document, pkg.purpose)),
+      documents: pkg.documents.map((document, documentIndex) => {
+        const fallbackId = `${group.email}-${pkg.name}-${pkg.date}-${documentIndex}`;
+        const normalized = normalizePackageDocument(document, pkg.purpose);
+
+        return { ...normalized, id: packageDocumentIdentity(document, fallbackId) };
+      }),
     })),
   );
 }
@@ -66,7 +76,9 @@ export function SentPackagesManager() {
   const [sentDateFilter, setSentDateFilter] = useState("");
   const [signedDateFilter, setSignedDateFilter] = useState("");
   const [selectedRow, setSelectedRow] = useState<SentRow | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [page, setPage] = useState(1);
+  const [activeContextId, setActiveContextId] = useState("independent");
   const [isFilterDrawerOpen, setIsFilterDrawerOpen] = useState(false);
 
   useEffect(() => {
@@ -74,8 +86,10 @@ export function SentPackagesManager() {
       const contexts = readAccountContexts();
       const contextId = readActiveAccountContextId(contexts);
 
+      setActiveContextId(contextId);
       setGroups(readSentPackages(contextId));
       setSelectedRow(null);
+      setDeleteTarget(null);
     }
 
     syncContextPackages();
@@ -106,6 +120,74 @@ export function SentPackagesManager() {
   useEffect(() => {
     setPage(1);
   }, [purposeFilter, query, sentDateFilter, signedDateFilter, statusFilter]);
+
+  function removePackage(row: SentRow) {
+    setGroups((current) => {
+      const next = current
+        .map((group) => ({
+          ...group,
+          packages: group.packages.filter((pkg) => !(group.email === row.email && pkg.name === row.packageName && pkg.date === row.date)),
+        }))
+        .filter((group) => group.packages.length > 0);
+
+      writeSentPackages(next, activeContextId);
+      return next;
+    });
+    setSelectedRow((current) => current?.id === row.id ? null : current);
+    toast.success(`Pachetul "${row.packageName}" a fost sters din documentele trimise.`);
+  }
+
+  function removeDocument(row: SentRow, documentId: string, documentTitle: string) {
+    setGroups((current) => {
+      const next = current
+        .map((group) => {
+          if (group.email !== row.email) return group;
+
+          return {
+            ...group,
+            packages: group.packages
+              .map((pkg) => {
+                if (pkg.name !== row.packageName || pkg.date !== row.date) return pkg;
+
+                return {
+                  ...pkg,
+                  documents: pkg.documents.filter((document, documentIndex) => {
+                    const fallbackId = `${group.email}-${pkg.name}-${pkg.date}-${documentIndex}`;
+
+                    return packageDocumentIdentity(document, fallbackId) !== documentId;
+                  }),
+                };
+              })
+              .filter((pkg) => pkg.documents.length > 0),
+          };
+        })
+        .filter((group) => group.packages.length > 0);
+
+      writeSentPackages(next, activeContextId);
+      return next;
+    });
+
+    const remainingDocuments = row.documents.filter((document) => String(document.id) !== documentId);
+    setSelectedRow((current) => {
+      if (!current || current.id !== row.id) return current;
+      if (remainingDocuments.length === 0) return null;
+
+      return { ...current, documents: remainingDocuments };
+    });
+    toast.success(`Documentul "${documentTitle}" a fost sters din documentele trimise.`);
+  }
+
+  function confirmDelete() {
+    if (!deleteTarget) return;
+
+    if (deleteTarget.kind === "package") {
+      removePackage(deleteTarget.row);
+    } else {
+      removeDocument(deleteTarget.row, deleteTarget.documentId, deleteTarget.documentTitle);
+    }
+
+    setDeleteTarget(null);
+  }
 
   return (
     <>
@@ -154,9 +236,15 @@ export function SentPackagesManager() {
           <span>Destinatar</span>
           <span>Data trimiterii</span>
           <span>Status</span>
+          <span>Actiuni</span>
         </div>
         {visibleRows.map((row) => (
-          <button className="compact-package-row clickable" type="button" key={row.id} onClick={() => setSelectedRow(row)}>
+          <article className="compact-package-row clickable" key={row.id} onClick={() => setSelectedRow(row)} role="button" tabIndex={0} onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              setSelectedRow(row);
+            }
+          }}>
             <div>
               <strong><Send size={17} /> {row.packageName}</strong>
               <p>{row.purpose}</p>
@@ -167,7 +255,13 @@ export function SentPackagesManager() {
             </div>
             <span>{row.date}</span>
             <span className={`status-chip ${statusTone(row.status)}`}>{row.status}</span>
-          </button>
+            <button className="icon-button danger received-delete-button" type="button" aria-label={`Sterge pachetul ${row.packageName}`} onClick={(event) => {
+              event.stopPropagation();
+              setDeleteTarget({ kind: "package", row });
+            }}>
+              <Trash2 size={17} />
+            </button>
+          </article>
         ))}
       </section>
 
@@ -180,7 +274,12 @@ export function SentPackagesManager() {
                 <h2>{selectedRow.packageName}</h2>
                 <p>{selectedRow.recipient} · {selectedRow.email} · {selectedRow.date}</p>
               </div>
-              <button className="icon-button" type="button" aria-label="Inchide detaliile" onClick={() => setSelectedRow(null)}><X size={18} /></button>
+              <div className="modal-head-actions">
+                <button className="icon-button danger" type="button" aria-label={`Sterge pachetul ${selectedRow.packageName}`} onClick={() => setDeleteTarget({ kind: "package", row: selectedRow })}>
+                  <Trash2 size={18} />
+                </button>
+                <button className="icon-button" type="button" aria-label="Inchide detaliile" onClick={() => setSelectedRow(null)}><X size={18} /></button>
+              </div>
             </header>
             <div className="modal-summary">
               <span className={`status-chip ${statusTone(selectedRow.status)}`}>{selectedRow.status}</span>
@@ -189,23 +288,60 @@ export function SentPackagesManager() {
             </div>
             <div className="modal-doc-list">
               {selectedRow.documents.map((document) => (
-                <article className="modal-doc-row" key={document.title}>
-                  <FileSignature size={18} />
-                  <div>
-                    <strong>{document.title}</strong>
-                    <p>{document.category ?? "Fara folder"}{document.signedFile ? ` · PDF semnat: ${document.signedFile}` : ""}</p>
+                <article className="modal-doc-row" key={String(document.id)}>
+                  <div className="modal-doc-main">
+                    <FileSignature size={18} />
+                    <div>
+                      <strong>{document.title}</strong>
+                      <p>{document.category ?? "Fara folder"}{document.signedFile ? ` · PDF semnat: ${document.signedFile}` : ""}</p>
+                    </div>
                   </div>
-                  <span className={`status-chip ${statusTone(document.status)}`}>{document.status}</span>
-                  <span>{document.signedAt ? `Semnat: ${document.signedAt}` : ""}</span>
-                  {document.signedFile ? (
-                    <button className="secondary-button modal-doc-action" type="button" onClick={() => downloadSignedDocument(document.title, document.signedFile ?? `${document.title}.pdf`)}>
-                      <Download size={16} /> Descarca semnat
+                  <div className="modal-doc-meta">
+                    <span className={`status-chip ${statusTone(document.status)}`}>{document.status}</span>
+                    <small>{document.signedAt ? `Semnat: ${document.signedAt}` : "In asteptare"}</small>
+                  </div>
+                  <div className="modal-doc-actions">
+                    {document.signedFile ? (
+                      <button className="secondary-button modal-doc-action" type="button" onClick={() => downloadSignedDocument(document.title, document.signedFile ?? `${document.title}.pdf`)}>
+                        <Download size={16} /> Descarca semnat
+                      </button>
+                    ) : (
+                      <span className="muted">Asteapta PDF semnat</span>
+                    )}
+                    <button className="secondary-button danger-soft modal-doc-action" type="button" onClick={() => setDeleteTarget({ kind: "document", row: selectedRow, documentId: String(document.id), documentTitle: document.title })}>
+                      <Trash2 size={16} /> Sterge
                     </button>
-                  ) : (
-                    <span className="muted">Asteapta PDF semnat</span>
-                  )}
+                  </div>
                 </article>
               ))}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {deleteTarget && (
+        <section className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Confirmare stergere document trimis">
+          <div className="modal-panel confirm-modal">
+            <div className="confirm-icon danger">
+              <Trash2 size={24} />
+            </div>
+            <div>
+              <p className="eyebrow">Confirmare stergere</p>
+              <h2>{deleteTarget.kind === "package" ? "Stergi pachetul trimis?" : "Stergi documentul trimis?"}</h2>
+              <p className="muted">
+                {deleteTarget.kind === "package"
+                  ? `Pachetul "${deleteTarget.row.packageName}" va fi eliminat din lista ta de documente trimise.`
+                  : `Documentul "${deleteTarget.documentTitle}" va fi eliminat din pachetul "${deleteTarget.row.packageName}".`}
+                {" "}Aceasta actiune afecteaza doar contul tau.
+              </p>
+            </div>
+            <div className="confirm-actions">
+              <button className="secondary-button" type="button" onClick={() => setDeleteTarget(null)}>
+                Anuleaza
+              </button>
+              <button className="primary-button danger-confirm" type="button" onClick={confirmDelete}>
+                Sterge
+              </button>
             </div>
           </div>
         </section>

@@ -139,4 +139,9 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
 
         return $this;
     }
+
+    public function getProfile(): ?Profile
+    {
+        return $this->profile;
+    }
 }

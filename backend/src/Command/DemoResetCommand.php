@@ -29,8 +29,10 @@ final class DemoResetCommand extends Command
         $io = new SymfonyStyle($input, $output);
 
         $this->connection->executeStatement('SET FOREIGN_KEY_CHECKS=0');
-        foreach (['document_package_items', 'document_packages', 'documents', 'profiles', 'users'] as $table) {
-            $this->connection->executeStatement(sprintf('TRUNCATE TABLE %s', $table));
+        foreach (['document_package_items', 'document_packages', 'documents', 'institution_taxpayers', 'profiles', 'users'] as $table) {
+            if ($this->tableExists($table)) {
+                $this->connection->executeStatement(sprintf('TRUNCATE TABLE %s', $table));
+            }
         }
         $this->connection->executeStatement('SET FOREIGN_KEY_CHECKS=1');
 
@@ -53,9 +55,15 @@ final class DemoResetCommand extends Command
         }
 
         $this->entityManager->flush();
-        $io->success('Demo database was reset. Created 5 accounts: superadmin, individual, company and two institutions.');
+
+        $io->success('Demo database was reset. Created only the 5 login demo accounts. Citizens, documents and package flows were removed.');
 
         return Command::SUCCESS;
+    }
+
+    private function tableExists(string $table): bool
+    {
+        return $this->connection->createSchemaManager()->tablesExist([$table]);
     }
 
     /**
@@ -139,7 +147,7 @@ final class DemoResetCommand extends Command
                         'name' => 'Demo Construct SRL',
                         'registrationNumber' => 'J52/123/2020',
                         'address' => 'Strada Fabricii nr. 8, Joita, Giurgiu',
-                        'source' => 'demo-public-lookup',
+                        'source' => 'seed-account',
                     ],
                     'address' => [
                         'street' => 'Strada Fabricii',
@@ -170,7 +178,7 @@ final class DemoResetCommand extends Command
                         'name' => 'Primaria Joita',
                         'registrationNumber' => '',
                         'address' => 'Strada Primariei nr. 1, Joita, Giurgiu',
-                        'source' => 'demo-public-lookup',
+                        'source' => 'seed-account',
                     ],
                     'address' => [
                         'street' => 'Strada Primariei',
@@ -202,7 +210,7 @@ final class DemoResetCommand extends Command
                         'name' => 'Primaria Pleasov',
                         'registrationNumber' => '',
                         'address' => 'Strada Primariei nr. 2, Pleasov, Olt',
-                        'source' => 'demo-public-lookup',
+                        'source' => 'seed-account',
                     ],
                     'address' => [
                         'street' => 'Strada Primariei',

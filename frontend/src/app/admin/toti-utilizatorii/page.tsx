@@ -1,10 +1,10 @@
 import { AdminPlatformManager } from "@/components/AdminPlatformManager";
 import { AppShell } from "@/components/AppShell";
 
-export default function AdminPage() {
+export default function AdminAllUsersPage() {
   return (
     <AppShell>
-      <AdminPlatformManager section="dashboard" />
+      <AdminPlatformManager section="all-users" />
     </AppShell>
   );
 }

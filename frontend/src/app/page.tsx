@@ -5,7 +5,7 @@ const features = [
   { icon: ShieldCheck, title: "Cont securizat", text: "Email, parola, 2FA si token-uri pentru sesiuni si actiuni sensibile." },
   { icon: PackageCheck, title: "Pachete de documente", text: "Grupezi documente, denumesti pachetul si alegi destinatarul dupa email sau cod de cont." },
   { icon: FileSignature, title: "Pregatit pentru semnare", text: "Fluxul include documente semnate, re-incarcate si trimise inapoi catre expeditor." },
-  { icon: UsersRound, title: "Profil complet", text: "Date personale, firma, limba, timezone si campuri optionale intr-o zona discreta." }
+  { icon: UsersRound, title: "Profil complet", text: "Date personale, firma, limba, fus orar si campuri optionale intr-o zona discreta." }
 ];
 
 export default function Home() {
@@ -37,7 +37,7 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="hero-product" aria-label="Previzualizare dashboard">
+        <div className="hero-product" aria-label="Previzualizare panou de control">
           <div className="mock-window">
             <div className="mock-header">
               <span />

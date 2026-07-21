@@ -7,6 +7,7 @@ export type AccountContext = {
   locality?: string;
   identifier?: string;
   address?: string;
+  enrollmentStatus?: "active" | "pending";
 };
 
 export const accountContextsStorageKey = "docmanager_account_contexts";
@@ -18,6 +19,7 @@ export const defaultAccountContexts: AccountContext[] = [
     name: "Activitate independenta",
     type: "independent",
     locality: "Fara institutie",
+    enrollmentStatus: "active",
   },
   {
     id: "primaria-joita",
@@ -25,6 +27,7 @@ export const defaultAccountContexts: AccountContext[] = [
     type: "city_hall",
     locality: "Joita",
     identifier: "UAT-JOITA",
+    enrollmentStatus: "active",
   },
   {
     id: "primaria-pleasov",
@@ -32,6 +35,7 @@ export const defaultAccountContexts: AccountContext[] = [
     type: "city_hall",
     locality: "Pleasov",
     identifier: "UAT-PLEASOV",
+    enrollmentStatus: "active",
   },
 ];
 
@@ -58,6 +62,8 @@ export function writeAccountContexts(contexts: AccountContext[]) {
 }
 
 export function readActiveAccountContextId(contexts: AccountContext[]) {
+  if (typeof window === "undefined") return contexts[0]?.id ?? "independent";
+
   const saved = window.localStorage.getItem(activeAccountContextStorageKey);
   const fallback = contexts[0]?.id ?? "independent";
 
@@ -67,4 +73,24 @@ export function readActiveAccountContextId(contexts: AccountContext[]) {
 export function writeActiveAccountContextId(id: string) {
   window.localStorage.setItem(activeAccountContextStorageKey, id);
   window.dispatchEvent(new Event("docmanager-account-context-change"));
+}
+
+export type ContextAwareUser = {
+  accountType?: string;
+  linkedInstitutionIds?: string[];
+} | null | undefined;
+
+export function resolveActiveContextIdForUser(user?: ContextAwareUser) {
+  const contexts = readAccountContexts();
+  const activeContextId = readActiveAccountContextId(contexts);
+
+  if (user?.accountType === "institution") {
+    if (user.linkedInstitutionIds?.includes(activeContextId)) {
+      return activeContextId;
+    }
+
+    return user.linkedInstitutionIds?.[0] ?? activeContextId;
+  }
+
+  return activeContextId;
 }

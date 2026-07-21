@@ -1,29 +1,62 @@
 "use client";
 
-import { ChangeEvent, DragEvent, FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
-import { Building2, CheckCircle2, Download, FileSpreadsheet, FileText, FileUp, Link2, PlusCircle, Search, UploadCloud, UserRound, UsersRound } from "lucide-react";
+import { ChangeEvent, DragEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUpRight, Building2, CheckCircle2, Download, FileInput, FileOutput, FileSpreadsheet, FileText, FileUp, PlusCircle, Search, UploadCloud, UserRound, X } from "lucide-react";
+import Link from "next/link";
 import { toast } from "sonner";
 import {
-  PlatformUser,
   PlatformInstitution,
   TaxpayerCompany,
   TaxpayerPerson,
   readPlatformInstitutions,
-  readPlatformUsers,
-  readTaxpayerCompanies,
-  readTaxpayerPersons,
-  writeTaxpayerCompanies,
-  writeTaxpayerPersons,
 } from "@/lib/adminData";
+import { apiFetch } from "@/lib/api";
+import { resolveActiveContextIdForUser } from "@/lib/institutions";
+import { packageDocumentTitle, readReceivedPackages, readSentPackages, statusTone } from "@/lib/packages";
+import { ROMANIA_COUNTIES, localityOptions } from "@/lib/romaniaLocalities";
 
-const countyLocalities: Record<string, string[]> = {
-  Giurgiu: ["Joita", "Bolintin-Deal", "Marsa", "Mihailesti"],
-  Olt: ["Pleasov", "Slatina", "Caracal", "Bals"],
-  Bucuresti: ["Sector 1", "Sector 2", "Sector 3", "Sector 4", "Sector 5", "Sector 6"],
-  Ilfov: ["Voluntari", "Otopeni", "Chitila", "Buftea"],
+type StoredUser = {
+  id: string;
+  name: string;
+  email: string;
+  accountType: "individual" | "company" | "institution";
+  linkedInstitutionIds?: string[];
+};
+type ConstituentRow =
+  | (TaxpayerPerson & { rowType: "person" })
+  | (TaxpayerCompany & { rowType: "company" });
+
+type TaxpayerSummary = {
+  total: number;
+  persons: number;
+  companies: number;
+  active: number;
 };
 
-type StoredUser = Pick<PlatformUser, "id" | "name" | "email" | "accountType" | "linkedInstitutionIds">;
+type TaxpayerApiItem = {
+  id: string;
+  institutionId: string;
+  type: "person" | "company";
+  name: string;
+  identifier: string;
+  locality: string;
+  status: "legat" | "nelegat";
+  linkedUserId: number | null;
+  email?: string | null;
+  phone?: string | null;
+  accountKind?: string | null;
+  address?: string | null;
+  details?: Record<string, unknown>;
+};
+
+type TaxpayerApiResponse = {
+  items: TaxpayerApiItem[];
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+  summary: TaxpayerSummary;
+};
 
 type PersonForm = {
   firstName: string;
@@ -80,12 +113,12 @@ function readStoredUser(): StoredUser | null {
   }
 }
 
-function normalizeFiscal(value?: string) {
-  return (value ?? "").replace(/^RO/i, "").replace(/\D/g, "");
-}
-
 function normalizeText(value?: string) {
   return (value ?? "").trim();
+}
+
+function normalizeName(value?: string) {
+  return (value ?? "").toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 function splitCsvLine(line: string) {
@@ -152,7 +185,7 @@ const importColumns = [
 type ImportColumn = typeof importColumns[number];
 type ImportRecord = Record<ImportColumn, string>;
 
-const demoImportRows: ImportRecord[] = [
+const templateImportRows: ImportRecord[] = [
   {
     tip: "PF",
     nume: "Ionescu",
@@ -264,13 +297,13 @@ function csvEscape(value: string) {
 function buildDemoCsv() {
   return [
     importColumns.join(","),
-    ...demoImportRows.map((row) => importColumns.map((column) => csvEscape(row[column])).join(",")),
+    ...templateImportRows.map((row) => importColumns.map((column) => csvEscape(row[column])).join(",")),
   ].join("\n");
 }
 
 function buildDemoExcelHtml() {
   const header = importColumns.map((column) => `<th>${column}</th>`).join("");
-  const rows = demoImportRows.map((row) => `<tr>${importColumns.map((column) => `<td>${row[column]}</td>`).join("")}</tr>`).join("");
+  const rows = templateImportRows.map((row) => `<tr>${importColumns.map((column) => `<td>${row[column]}</td>`).join("")}</tr>`).join("");
 
   return `<!doctype html>
 <html>
@@ -423,56 +456,244 @@ function accountKindLabel(kind?: string) {
   return "Nespecificat";
 }
 
+function apiItemToRow(item: TaxpayerApiItem): ConstituentRow {
+  const base = {
+    id: item.id,
+    name: item.name,
+    phone: item.phone ?? "",
+    email: item.email ?? "",
+    country: "Romania",
+    county: "",
+    locality: item.locality,
+    street: "",
+    streetNumber: "",
+    buildingNumber: "",
+    floor: "",
+    apartment: "",
+    postalCode: "",
+    latitude: "",
+    longitude: "",
+    institutionId: item.institutionId,
+    status: item.status,
+    linkedUserId: item.linkedUserId ? `user-${item.linkedUserId}` : null,
+  };
+
+  if (item.type === "company") {
+    return {
+      ...base,
+      rowType: "company",
+      cif: item.identifier,
+      accountKind: item.accountKind === "company_property_owner" ? "company_property_owner" : "company_hq",
+    };
+  }
+
+  const [lastName = "", ...firstNameParts] = item.name.split(" ");
+
+  return {
+    ...base,
+    rowType: "person",
+    firstName: firstNameParts.join(" "),
+    lastName,
+    cnp: item.identifier,
+    ciSeries: "",
+    ciNumber: "",
+    ciIssuedAt: "",
+    birthDate: "",
+    birthPlace: "",
+    accountKind: item.accountKind === "property_owner" ? "property_owner" : "resident",
+  };
+}
+
+function recordToApiPayload(record: ImportRecord) {
+  const isCompany = record.tip.toUpperCase() === "PJ";
+
+  return {
+    type: isCompany ? "company" : "person",
+    name: isCompany ? record.nume : `${record.nume} ${record.prenume}`.trim(),
+    firstName: record.prenume,
+    lastName: record.nume,
+    identifier: record.cnp_cui,
+    phone: record.telefon,
+    email: record.email,
+    accountKind: record.tip_cont,
+    country: record.tara,
+    county: record.judet,
+    locality: record.localitate,
+    street: record.strada,
+    streetNumber: record.nr_strada,
+    buildingNumber: record.nr_cladire,
+    floor: record.etaj,
+    apartment: record.apartament,
+    postalCode: record.cod_postal,
+    latitude: record.latitudine,
+    longitude: record.longitudine,
+    ciSeries: record.serie_ci,
+    ciNumber: record.numar_ci,
+    ciIssuedAt: record.data_eliberarii_ci,
+    birthDate: record.data_nasterii,
+    birthPlace: record.loc_nastere,
+  };
+}
+
 export function InstitutionConstituentsManager() {
   const [currentUser, setCurrentUser] = useState<StoredUser | null>(null);
   const [institutions, setInstitutions] = useState<PlatformInstitution[]>([]);
-  const institutionId = currentUser?.linkedInstitutionIds?.[0] ?? "primaria-joita";
+  const [institutionId, setInstitutionId] = useState("");
   const institution = institutions.find((item) => item.id === institutionId);
   const [kind, setKind] = useState<"person" | "company">("person");
   const [personForm, setPersonForm] = useState<PersonForm>(emptyPersonForm);
   const [companyForm, setCompanyForm] = useState<CompanyForm>(emptyCompanyForm);
-  const [persons, setPersons] = useState<TaxpayerPerson[]>([]);
-  const [companies, setCompanies] = useState<TaxpayerCompany[]>([]);
-  const [users, setUsers] = useState<PlatformUser[]>([]);
+  const [constituentRows, setConstituentRows] = useState<ConstituentRow[]>([]);
+  const [summary, setSummary] = useState<TaxpayerSummary>({ total: 0, persons: 0, companies: 0, active: 0 });
+  const [totalResults, setTotalResults] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [isLoadingRows, setIsLoadingRows] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const [search, setSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState<"all" | "person" | "company">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "legat" | "nelegat">("all");
+  const [accountKindFilter, setAccountKindFilter] = useState("all");
+  const [page, setPage] = useState(1);
+  const [pageInput, setPageInput] = useState("1");
   const [csvPayload, setCsvPayload] = useState("");
   const [importFileName, setImportFileName] = useState("");
   const [isDragOver, setIsDragOver] = useState(false);
-  const enrollmentRef = useRef<HTMLDivElement | null>(null);
+  const [isEnrollmentModalOpen, setIsEnrollmentModalOpen] = useState(false);
+  const [enrollmentTab, setEnrollmentTab] = useState<"manual" | "import">("manual");
+  const [detailConstituent, setDetailConstituent] = useState<ConstituentRow | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const pageSize = 20;
 
   useEffect(() => {
-    const storedUser = readStoredUser();
-    const nextInstitutions = readPlatformInstitutions();
-    const nextInstitutionId = storedUser?.linkedInstitutionIds?.[0] ?? "primaria-joita";
-    const nextInstitution = nextInstitutions.find((item) => item.id === nextInstitutionId);
+    function syncInstitutionContext() {
+      const storedUser = readStoredUser();
+      const nextInstitutions = readPlatformInstitutions();
+      const nextInstitutionId = resolveActiveContextIdForUser(storedUser);
+      const nextInstitution = nextInstitutions.find((item) => item.id === nextInstitutionId);
 
-    setCurrentUser(storedUser);
-    setInstitutions(nextInstitutions);
-    setPersons(readTaxpayerPersons());
-    setCompanies(readTaxpayerCompanies());
-    setUsers(readPlatformUsers());
-    setPersonForm((current) => ({ ...current, locality: nextInstitution?.locality ?? current.locality }));
-    setCompanyForm((current) => ({ ...current, locality: nextInstitution?.locality ?? current.locality }));
+      setCurrentUser(storedUser);
+      setInstitutions(nextInstitutions);
+      setInstitutionId(nextInstitutionId);
+      setPersonForm((current) => ({ ...current, locality: nextInstitution?.locality ?? current.locality }));
+      setCompanyForm((current) => ({ ...current, locality: nextInstitution?.locality ?? current.locality }));
+    }
+
+    syncInstitutionContext();
+    window.addEventListener("storage", syncInstitutionContext);
+    window.addEventListener("docmanager-account-context-change", syncInstitutionContext);
+
+    return () => {
+      window.removeEventListener("storage", syncInstitutionContext);
+      window.removeEventListener("docmanager-account-context-change", syncInstitutionContext);
+    };
   }, []);
 
-  const institutionPersons = persons.filter((person) => person.institutionId === institutionId);
-  const institutionCompanies = companies.filter((company) => company.institutionId === institutionId);
-  const filteredPersons = institutionPersons.filter((person) => `${person.name} ${person.cnp} ${person.email ?? ""}`.toLowerCase().includes(search.toLowerCase()));
-  const filteredCompanies = institutionCompanies.filter((company) => `${company.name} ${company.cif} ${company.email ?? ""}`.toLowerCase().includes(search.toLowerCase()));
-  function matchPerson(cnp: string) {
-    return users.find((user) => user.accountType === "individual" && normalizeFiscal(user.cnp) === normalizeFiscal(cnp));
+  useEffect(() => {
+    if (!institutionId) return;
+
+    const controller = new AbortController();
+    const params = new URLSearchParams({
+      institutionId,
+      page: String(page),
+      limit: String(pageSize),
+      q: search,
+      type: typeFilter,
+      status: statusFilter,
+      accountKind: accountKindFilter,
+    });
+
+    setIsLoadingRows(true);
+
+    apiFetch(`/api/institution-taxpayers?${params.toString()}`, { signal: controller.signal })
+      .then((response) => response.json())
+      .then((data: TaxpayerApiResponse) => {
+        setConstituentRows((data.items ?? []).map(apiItemToRow));
+        setSummary(data.summary ?? { total: 0, persons: 0, companies: 0, active: 0 });
+        setTotalResults(data.total ?? 0);
+        setTotalPages(Math.max(1, data.totalPages ?? 1));
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        toast.error("Nu pot incarca lista de cetateni din baza de date.");
+      })
+      .finally(() => setIsLoadingRows(false));
+
+    return () => controller.abort();
+  }, [accountKindFilter, institutionId, page, pageSize, reloadKey, search, statusFilter, typeFilter]);
+
+  const currentPage = Math.min(page, totalPages);
+  const pageStartIndex = totalResults === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const pageEndIndex = Math.min(currentPage * pageSize, totalResults);
+  const paginatedConstituentRows = constituentRows;
+  const detailIncoming = useMemo(() => {
+    if (typeof window === "undefined" || !detailConstituent) return [];
+
+    const name = normalizeName(detailConstituent.name);
+    const email = detailConstituent.email?.toLowerCase();
+
+    return readReceivedPackages(institutionId).flatMap((group, groupIndex) =>
+      group.packages.map((pkg, packageIndex) => ({
+        id: `incoming-${groupIndex}-${packageIndex}`,
+        partner: group.from,
+        email: group.email.toLowerCase(),
+        packageName: pkg.name,
+        date: pkg.date,
+        status: pkg.status,
+        documents: pkg.documents.map(packageDocumentTitle),
+      })),
+    ).filter((row) => normalizeName(row.partner) === name || (!!email && row.email === email));
+  }, [detailConstituent, institutionId]);
+  const detailOutgoing = useMemo(() => {
+    if (typeof window === "undefined" || !detailConstituent) return [];
+
+    const name = normalizeName(detailConstituent.name);
+    const email = detailConstituent.email?.toLowerCase();
+
+    return readSentPackages(institutionId).flatMap((group, groupIndex) =>
+      group.packages.map((pkg, packageIndex) => ({
+        id: `outgoing-${groupIndex}-${packageIndex}`,
+        partner: group.to,
+        email: group.email.toLowerCase(),
+        packageName: pkg.name,
+        date: pkg.date,
+        status: pkg.status,
+        documents: pkg.documents.map(packageDocumentTitle),
+      })),
+    ).filter((row) => normalizeName(row.partner) === name || (!!email && row.email === email));
+  }, [detailConstituent, institutionId]);
+
+  useEffect(() => {
+    setPage(1);
+    setPageInput("1");
+  }, [accountKindFilter, search, statusFilter, typeFilter]);
+
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages);
+      setPageInput(String(totalPages));
+      return;
+    }
+
+    setPageInput(String(page));
+  }, [page, totalPages]);
+
+  function goToPage(nextPage: number) {
+    const cleanPage = Number.isFinite(nextPage) ? nextPage : 1;
+    const clampedPage = Math.min(Math.max(1, Math.trunc(cleanPage)), totalPages);
+    setPage(clampedPage);
+    setPageInput(String(clampedPage));
   }
 
-  function matchCompany(cif: string) {
-    return users.find((user) => user.accountType === "company" && normalizeFiscal(user.cif) === normalizeFiscal(cif));
+  function submitPageInput(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    goToPage(Number(pageInput));
   }
 
   function updatePersonField(field: keyof PersonForm, value: string) {
     setPersonForm((current) => ({
       ...current,
       [field]: value,
-      ...(field === "county" ? { locality: countyLocalities[value]?.[0] ?? "" } : {}),
+      ...(field === "county" ? { locality: "" } : {}),
     }));
   }
 
@@ -480,64 +701,65 @@ export function InstitutionConstituentsManager() {
     setCompanyForm((current) => ({
       ...current,
       [field]: value,
-      ...(field === "county" ? { locality: countyLocalities[value]?.[0] ?? "" } : {}),
+      ...(field === "county" ? { locality: "" } : {}),
     }));
   }
 
-  function savePerson(event: FormEvent) {
+  async function savePerson(event: FormEvent) {
     event.preventDefault();
-    const personExists = persons.some((person) => person.institutionId === institutionId && normalizeFiscal(person.cnp) === normalizeFiscal(personForm.cnp));
-    if (personExists) {
-      toast.error("Cetateanul exista deja in baza acestei institutii.");
+
+    const response = await apiFetch("/api/institution-taxpayers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...personForm,
+        type: "person",
+        institutionId,
+        name: `${personForm.lastName} ${personForm.firstName}`.trim(),
+        identifier: personForm.cnp,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      toast.error(data.message ?? "Cetateanul nu a putut fi salvat in baza de date.");
       return;
     }
 
-    const matched = matchPerson(personForm.cnp);
-    const nextPerson: TaxpayerPerson = {
-      ...personForm,
-      id: `tax-person-${Date.now()}`,
-      name: `${personForm.lastName} ${personForm.firstName}`.trim(),
-      cnp: personForm.cnp,
-      locality: personForm.locality,
-      institutionId,
-      status: matched ? "legat" : "nelegat",
-      linkedUserId: matched?.id ?? null,
-    };
-    const next = [nextPerson, ...persons];
-    setPersons(next);
-    writeTaxpayerPersons(next);
     setPersonForm({ ...emptyPersonForm, county: personForm.county, locality: personForm.locality });
-    toast.success(matched ? "Cetatean adaugat si legat automat de cont." : "Cetatean adaugat. Nu exista inca un cont asociat.");
+    setReloadKey((current) => current + 1);
+    toast.success(data.item?.status === "legat" ? "Cetatean adaugat si legat automat de cont." : "Cetatean adaugat in baza institutiei.");
   }
 
-  function saveCompany(event: FormEvent) {
+  async function saveCompany(event: FormEvent) {
     event.preventDefault();
-    const companyExists = companies.some((company) => company.institutionId === institutionId && normalizeFiscal(company.cif) === normalizeFiscal(companyForm.cif));
-    if (companyExists) {
-      toast.error("Compania exista deja in baza acestei institutii.");
+
+    const response = await apiFetch("/api/institution-taxpayers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...companyForm,
+        type: "company",
+        institutionId,
+        name: companyForm.name,
+        identifier: companyForm.cif,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      toast.error(data.message ?? "Compania nu a putut fi salvata in baza de date.");
       return;
     }
 
-    const matched = matchCompany(companyForm.cif);
-    const nextCompany: TaxpayerCompany = {
-      ...companyForm,
-      id: `tax-company-${Date.now()}`,
-      name: companyForm.name,
-      cif: companyForm.cif,
-      locality: companyForm.locality,
-      institutionId,
-      status: matched ? "legat" : "nelegat",
-      linkedUserId: matched?.id ?? null,
-    };
-    const next = [nextCompany, ...companies];
-    setCompanies(next);
-    writeTaxpayerCompanies(next);
     setCompanyForm({ ...emptyCompanyForm, county: companyForm.county, locality: companyForm.locality });
-    toast.success(matched ? "Companie adaugata si legata automat de cont." : "Companie adaugata. Nu exista inca un cont asociat.");
+    setReloadKey((current) => current + 1);
+    toast.success(data.item?.status === "legat" ? "Companie adaugata si legata automat de cont." : "Companie adaugata in baza institutiei.");
   }
 
   function scrollToEnrollment() {
-    enrollmentRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setEnrollmentTab("manual");
+    setIsEnrollmentModalOpen(true);
   }
 
   async function readImportFile(file: File | null) {
@@ -569,96 +791,25 @@ export function InstitutionConstituentsManager() {
     fileInputRef.current?.click();
   }
 
-  function importCsv() {
+  async function importCsv() {
     const records = parseImportRecords(csvPayload);
-    const nextPersons = [...persons];
-    const nextCompanies = [...companies];
-    let imported = 0;
-    let skipped = 0;
 
-    records.forEach((record) => {
-      const type = record.tip.toUpperCase();
-      const identifier = record.cnp_cui;
-
-      if (type === "PF") {
-        if (!identifier || nextPersons.some((person) => person.institutionId === institutionId && normalizeFiscal(person.cnp) === normalizeFiscal(identifier))) {
-          skipped += 1;
-          return;
-        }
-
-        const matched = matchPerson(identifier);
-        nextPersons.unshift({
-          id: `tax-person-${Date.now()}-${nextPersons.length}`,
-          firstName: record.prenume,
-          lastName: record.nume,
-          name: `${record.nume} ${record.prenume}`.trim(),
-          cnp: identifier,
-          phone: record.telefon,
-          email: record.email,
-          ciSeries: record.serie_ci,
-          ciNumber: record.numar_ci,
-          ciIssuedAt: record.data_eliberarii_ci,
-          birthDate: record.data_nasterii,
-          birthPlace: record.loc_nastere,
-          country: record.tara || "Romania",
-          county: record.judet || "Giurgiu",
-          locality: record.localitate || institution?.locality || "Joita",
-          street: record.strada,
-          streetNumber: record.nr_strada,
-          buildingNumber: record.nr_cladire,
-          floor: record.etaj,
-          apartment: record.apartament,
-          postalCode: record.cod_postal,
-          latitude: record.latitudine,
-          longitude: record.longitudine,
-          accountKind: record.tip_cont === "property_owner" ? "property_owner" : "resident",
-          institutionId,
-          status: matched ? "legat" : "nelegat",
-          linkedUserId: matched?.id ?? null,
-        });
-        imported += 1;
-      }
-
-      if (type === "PJ") {
-        if (!identifier || nextCompanies.some((company) => company.institutionId === institutionId && normalizeFiscal(company.cif) === normalizeFiscal(identifier))) {
-          skipped += 1;
-          return;
-        }
-
-        const matched = matchCompany(identifier);
-        nextCompanies.unshift({
-          id: `tax-company-${Date.now()}-${nextCompanies.length}`,
-          name: record.nume,
-          cif: identifier,
-          phone: record.telefon,
-          email: record.email,
-          country: record.tara || "Romania",
-          county: record.judet || "Giurgiu",
-          locality: record.localitate || institution?.locality || "Joita",
-          street: record.strada,
-          streetNumber: record.nr_strada,
-          buildingNumber: record.nr_cladire,
-          floor: record.etaj,
-          apartment: record.apartament,
-          postalCode: record.cod_postal,
-          latitude: record.latitudine,
-          longitude: record.longitudine,
-          accountKind: record.tip_cont === "company_property_owner" ? "company_property_owner" : "company_hq",
-          institutionId,
-          status: matched ? "legat" : "nelegat",
-          linkedUserId: matched?.id ?? null,
-        });
-        imported += 1;
-      }
+    const response = await apiFetch("/api/institution-taxpayers/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ institutionId, records: records.map(recordToApiPayload) }),
     });
+    const data = await response.json().catch(() => ({}));
 
-    setPersons(nextPersons);
-    setCompanies(nextCompanies);
-    writeTaxpayerPersons(nextPersons);
-    writeTaxpayerCompanies(nextCompanies);
+    if (!response.ok) {
+      toast.error(data.message ?? "Importul nu a putut fi procesat in baza de date.");
+      return;
+    }
+
     setCsvPayload("");
     setImportFileName("");
-    toast.success(`Import finalizat: ${imported} inregistrari adaugate${skipped ? `, ${skipped} duplicate sarite` : ""}.`);
+    setReloadKey((current) => current + 1);
+    toast.success(data.message ?? "Import finalizat.");
   }
 
   function downloadCsvTemplate() {
@@ -676,63 +827,180 @@ export function InstitutionConstituentsManager() {
       <div className="page-title-row">
         <div>
           <span className="eyebrow">Institutie</span>
-          <h1>Cetateni si companii</h1>
-          <p>Administreaza baza locala de contribuabili si legaturile automate pe CNP/CUI.</p>
+          <h1>Cetateni</h1>
+          <p>Administreaza baza locala de cetateni si legaturile automate pe CNP/CUI.</p>
         </div>
-      </div>
-
-      <div className="institution-overview-grid">
-        <article>
-          <UsersRound size={24} />
-          <strong>{institutionPersons.length}</strong>
-          <span>Persoane fizice</span>
-        </article>
-        <article>
-          <Building2 size={24} />
-          <strong>{institutionCompanies.length}</strong>
-          <span>Persoane juridice</span>
-        </article>
-        <article>
-          <Link2 size={24} />
-          <strong>{[...institutionPersons, ...institutionCompanies].filter((item) => item.status === "legat").length}</strong>
-          <span>Conturi active</span>
-        </article>
       </div>
 
       <div className="institution-list-card">
         <header>
           <div>
             <span className="eyebrow">Baza locala</span>
-            <h2>Contribuabili inrolati</h2>
+            <h2>Lista cetateni</h2>
           </div>
+          <span className="list-results-pill">{totalResults} rezultate</span>
           <div className="institution-list-actions">
             <label className="compact-search"><Search size={18} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Cauta dupa nume, CNP, CUI sau email" /></label>
+            <div className="segmented-control">
+              <button type="button" className={typeFilter === "all" ? "active" : ""} onClick={() => setTypeFilter("all")}>Toate</button>
+              <button type="button" className={typeFilter === "person" ? "active" : ""} onClick={() => setTypeFilter("person")}>PF</button>
+              <button type="button" className={typeFilter === "company" ? "active" : ""} onClick={() => setTypeFilter("company")}>PJ</button>
+            </div>
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}>
+              <option value="all">Toate statusurile</option>
+              <option value="legat">Cont activ</option>
+              <option value="nelegat">Fara cont</option>
+            </select>
+            <select value={accountKindFilter} onChange={(event) => setAccountKindFilter(event.target.value)}>
+              <option value="all">Toate tipurile</option>
+              <option value="resident">Domiciliu localitate</option>
+              <option value="property_owner">Proprietar localitate</option>
+              <option value="company_hq">Sediu social local</option>
+              <option value="company_property_owner">Companie cu proprietati</option>
+            </select>
             <button className="add-constituent-button" type="button" onClick={scrollToEnrollment}>
               <PlusCircle size={19} />
-              Adauga cetatean / contribuabil
+              Adauga cetatean
             </button>
           </div>
         </header>
         <div className="constituent-table">
-          {[...filteredPersons, ...filteredCompanies].map((item) => {
-            const isPerson = "cnp" in item;
+          {paginatedConstituentRows.map((item) => {
+            const isPerson = item.rowType === "person";
+            const identifier = isPerson ? item.cnp : item.cif;
 
             return (
-              <article className="constituent-row" key={item.id}>
-                <span className="entity-icon">{isPerson ? <UserRound size={20} /> : <Building2 size={20} />}</span>
-                <div>
-                  <strong>{item.name}</strong>
-                  <small>{isPerson ? `CNP ${item.cnp}` : `CUI ${item.cif}`} · {item.locality} · {accountKindLabel(item.accountKind)}</small>
+              <article className="constituent-row institution-taxpayer-row" key={item.id}>
+                <div className="taxpayer-main-button constituent-main">
+                  <span className="entity-icon taxpayer-icon">{isPerson ? <UserRound size={20} /> : <Building2 size={20} />}</span>
+                  <span>
+                    <strong>{item.name}</strong>
+                    <small>{isPerson ? "CNP" : "CUI"} {identifier} · {item.locality}</small>
+                  </span>
                 </div>
-                <span className={`link-status ${item.status}`}>{item.status === "legat" ? "Legat de cont" : "Fara cont"}</span>
-                <span className="muted-id">{item.linkedUserId ?? "id_cetatean null"}</span>
+                <span className="taxpayer-row-meta">
+                  <em className={item.status === "legat" ? "linked" : "unlinked"}>{item.status === "legat" ? "Cont activ" : "Fara cont"}</em>
+                  <small>{accountKindLabel(item.accountKind)}</small>
+                </span>
+                <span className="taxpayer-row-counts">
+                  <small>Primite <strong>0</strong></small>
+                  <small>Trimise <strong>0</strong></small>
+                </span>
+                <button className="taxpayer-details-button" type="button" onClick={() => setDetailConstituent(item)}>Detalii</button>
               </article>
             );
           })}
+          {totalResults === 0 ? <p className="empty-state-inline">{isLoadingRows ? "Se incarca lista din baza de date..." : "Nu exista cetateni pentru filtrele selectate."}</p> : null}
         </div>
+        {totalResults > 0 ? (
+          <div className="institution-pagination institution-list-pagination">
+            <span>Afisare {pageStartIndex}-{pageEndIndex} din {totalResults} cetateni</span>
+            <div className="pagination-controls">
+              <button type="button" onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 1}>Anterior</button>
+              <form className="page-jump-form" onSubmit={submitPageInput}>
+                <label htmlFor="constituent-page-jump">Pagina</label>
+                <input
+                  id="constituent-page-jump"
+                  inputMode="numeric"
+                  min={1}
+                  max={totalPages}
+                  type="number"
+                  value={pageInput}
+                  onChange={(event) => setPageInput(event.target.value)}
+                />
+                <span>din {totalPages}</span>
+              </form>
+              <button type="button" onClick={() => goToPage(currentPage + 1)} disabled={currentPage >= totalPages}>Urmator</button>
+            </div>
+          </div>
+        ) : null}
       </div>
 
-      <div className="institution-work-grid" ref={enrollmentRef}>
+      {detailConstituent ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <section className="modal-panel taxpayer-detail-modal">
+            <button className="modal-close" type="button" aria-label="Inchide detaliile cetateanului" onClick={() => setDetailConstituent(null)}>
+              <X size={22} />
+            </button>
+            <div className="taxpayer-profile-card">
+              <span className="taxpayer-profile-icon">
+                {detailConstituent.rowType === "person" ? <UserRound size={28} /> : <Building2 size={28} />}
+              </span>
+              <div>
+                <p className="eyebrow">{detailConstituent.rowType === "person" ? "Persoana fizica" : "Persoana juridica"}</p>
+                <h2>{detailConstituent.name}</h2>
+                <p>{detailConstituent.email ?? "Cont neidentificat"} · {detailConstituent.locality}</p>
+              </div>
+              <div className="taxpayer-profile-meta">
+                <span>{detailConstituent.rowType === "person" ? "CNP" : "CIF"} <strong>{detailConstituent.rowType === "person" ? detailConstituent.cnp : detailConstituent.cif}</strong></span>
+                <span>Trimise <strong>{detailOutgoing.length}</strong></span>
+                <span>Primite <strong>{detailIncoming.length}</strong></span>
+              </div>
+            </div>
+            <div className="taxpayer-modal-actions">
+              <span className="taxpayer-linked-account-id">
+                ID cont platforma: <strong>{detailConstituent.linkedUserId ?? "fara cont legat"}</strong>
+              </span>
+              <Link className="secondary-button citizen-profile-link" href={`/institutie/cetateni/${detailConstituent.id}`}>
+                Profil cetatean <ArrowUpRight size={16} />
+              </Link>
+            </div>
+            <div className="taxpayer-history-grid">
+              <div>
+                <h3>Documente primite de la cetatean</h3>
+                <div className="taxpayer-history-list">
+                  {detailIncoming.length ? detailIncoming.map((row) => (
+                    <article key={row.id}>
+                      <FileInput size={18} />
+                      <span><strong>{row.packageName}</strong><small>{row.date} · {row.documents.join(", ")}</small></span>
+                      <em className={`registry-status ${statusTone(row.status)}`}>{row.status}</em>
+                    </article>
+                  )) : <p className="empty-state-inline">Nu exista documente primite de la acest cetatean.</p>}
+                </div>
+              </div>
+              <div>
+                <h3>Documente trimise catre cetatean</h3>
+                <div className="taxpayer-history-list">
+                  {detailOutgoing.length ? detailOutgoing.map((row) => (
+                    <article key={row.id}>
+                      <FileOutput size={18} />
+                      <span><strong>{row.packageName}</strong><small>{row.date} · {row.documents.join(", ")}</small></span>
+                      <em className={`registry-status ${statusTone(row.status)}`}>{row.status}</em>
+                    </article>
+                  )) : <p className="empty-state-inline">Nu exista documente trimise catre acest cetatean.</p>}
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {isEnrollmentModalOpen ? (
+        <section
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setIsEnrollmentModalOpen(false);
+          }}
+        >
+          <div className="modal-panel constituent-modal-panel" role="dialog" aria-modal="true" aria-label="Adauga cetatean sau importa baza locala">
+            <button className="modal-floating-close" type="button" aria-label="Inchide formularul" onClick={() => setIsEnrollmentModalOpen(false)}>
+              <X size={20} />
+            </button>
+            <header className="constituent-modal-head">
+              <div>
+                <span className="eyebrow">Baza locala</span>
+                <h2>Adauga cetatean</h2>
+                <p>Adauga manual un cetatean sau importa un fisier CSV/Excel pentru institutia curenta.</p>
+              </div>
+              <strong>{institution?.name ?? currentUser?.name ?? "Institutia curenta"}</strong>
+            </header>
+            <div className="segmented-control constituent-modal-tabs">
+              <button type="button" className={enrollmentTab === "manual" ? "active" : ""} onClick={() => setEnrollmentTab("manual")}>Adaugare manuala</button>
+              <button type="button" className={enrollmentTab === "import" ? "active" : ""} onClick={() => setEnrollmentTab("import")}>Import fisier</button>
+            </div>
+
+            {enrollmentTab === "manual" ? (
         <form className="institution-form-card" onSubmit={kind === "person" ? savePerson : saveCompany}>
           <header>
             <span>{kind === "person" ? <UserRound size={22} /> : <Building2 size={22} />}</span>
@@ -783,6 +1051,7 @@ export function InstitutionConstituentsManager() {
 
           <button className="primary-button" type="submit">Adauga in baza institutiei</button>
         </form>
+            ) : (
 
         <aside className="institution-import-card">
           <header>
@@ -820,11 +1089,14 @@ export function InstitutionConstituentsManager() {
             <input ref={fileInputRef} type="file" accept=".csv,.txt,.xls,.html" onChange={handleCsvFile} />
             <span className="dropzone-icon">{csvPayload ? <CheckCircle2 size={24} /> : <UploadCloud size={24} />}</span>
             <strong>{csvPayload ? "Fisier pregatit pentru import" : "Trage fisierul aici"}</strong>
-            <small>{importFileName || "CSV sau Excel (.xls). Modelul include cate un rand pentru fiecare tip de contribuabil."}</small>
+            <small>{importFileName || "CSV sau Excel (.xls). Modelul include cate un rand pentru fiecare tip de cetatean sau companie."}</small>
           </div>
           <button className="secondary-button" type="button" onClick={importCsv} disabled={!csvPayload.trim()}>Proceseaza import</button>
         </aside>
-      </div>
+            )}
+          </div>
+        </section>
+      ) : null}
     </section>
   );
 }
@@ -832,7 +1104,7 @@ export function InstitutionConstituentsManager() {
 function AddressFields<T extends { country: string; county: string; locality: string; street: string; streetNumber: string; buildingNumber: string; floor: string; apartment: string; postalCode: string; latitude: string; longitude: string }>(
   { values, onChange }: { values: T; onChange: (field: keyof T, value: string) => void },
 ) {
-  const localities = countyLocalities[values.county] ?? [];
+  const localities = localityOptions(values.county, values.locality);
 
   return (
     <fieldset className="address-fieldset">
@@ -840,9 +1112,11 @@ function AddressFields<T extends { country: string; county: string; locality: st
       <div className="institution-form-grid three">
         <label>Tara<input value={values.country} onChange={(event) => onChange("country", event.target.value)} /></label>
         <label>Judet<select value={values.county} onChange={(event) => onChange("county", event.target.value)}>
-          {Object.keys(countyLocalities).map((county) => <option value={county} key={county}>{county}</option>)}
+          <option value="">Selecteaza judetul</option>
+          {ROMANIA_COUNTIES.map((county) => <option value={county} key={county}>{county}</option>)}
         </select></label>
-        <label>Oras/Localitate<select value={values.locality} onChange={(event) => onChange("locality", event.target.value)}>
+        <label>Oras/Localitate<select value={values.locality} onChange={(event) => onChange("locality", event.target.value)} disabled={!values.county}>
+          <option value="">{values.county ? "Selecteaza localitatea" : "Alege mai intai judetul"}</option>
           {localities.map((locality) => <option value={locality} key={locality}>{locality}</option>)}
         </select></label>
         <label>Strada<input value={values.street} onChange={(event) => onChange("street", event.target.value)} placeholder="Strada" /></label>

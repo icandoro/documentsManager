@@ -10,45 +10,6 @@ final class PublicCompanyLookupService
         'https://webservicesp.anaf.ro/api/PlatitorTvaRest/v7/tva',
     ];
 
-    private const DEMO_COMPANIES = [
-        '11223344' => [
-            'name' => 'Demo Construct SRL',
-            'registrationNumber' => 'J23/1456/2020',
-            'address' => 'Comuna Joita, Strada Principala nr. 12',
-            'status' => 'date demo pentru dezvoltare',
-        ],
-        '12345678' => [
-            'name' => 'Primaria Joita',
-            'registrationNumber' => '',
-            'address' => 'Comuna Joita, Judetul Giurgiu',
-            'status' => 'date demo pentru dezvoltare',
-        ],
-        '87654321' => [
-            'name' => 'Primaria Pleasov',
-            'registrationNumber' => '',
-            'address' => 'Comuna Pleasov, Judetul Olt',
-            'status' => 'date demo pentru dezvoltare',
-        ],
-        '14399840' => [
-            'name' => 'DANTE INTERNATIONAL SA',
-            'registrationNumber' => 'J40/372/2002',
-            'address' => 'Municipiul Bucuresti, Sector 6',
-            'status' => 'date demo pentru dezvoltare',
-        ],
-        '15538360' => [
-            'name' => 'ORANGE ROMANIA SA',
-            'registrationNumber' => 'J40/10178/1996',
-            'address' => 'Municipiul Bucuresti',
-            'status' => 'date demo pentru dezvoltare',
-        ],
-        '48478795' => [
-            'name' => 'DIGIT RO S.R.L.',
-            'registrationNumber' => 'J40/12935/2023',
-            'address' => 'Municipiul Bucuresti, Sector 6, Drumul Valea Danului nr. 13',
-            'status' => 'date demo pentru dezvoltare',
-        ],
-    ];
-
     /**
      * @return array<string, mixed>
      */
@@ -289,18 +250,6 @@ final class PublicCompanyLookupService
      */
     private function fallbackOrManual(string $normalizedCif, string $message, array $debug = []): array
     {
-        if (isset(self::DEMO_COMPANIES[$normalizedCif])) {
-            return [
-                'cif' => $normalizedCif,
-                ...self::DEMO_COMPANIES[$normalizedCif],
-                'source' => 'date demo',
-                'lookupStatus' => 'demo_fallback',
-                'manualEntryAllowed' => true,
-                'warning' => 'ANAF nu a fost disponibil pentru aceasta cautare. Am incarcat date demo locale.',
-                'lookupDebug' => $debug,
-            ];
-        }
-
         return [
             'cif' => $normalizedCif,
             'message' => $message,

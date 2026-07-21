@@ -5,7 +5,6 @@ import { useEffect, useState, type CSSProperties } from "react";
 import {
   ArrowUpRight,
   Building2,
-  CheckCircle2,
   FileInput,
   FileOutput,
   Files,
@@ -21,12 +20,19 @@ import {
   Zap,
 } from "lucide-react";
 import { documents, receivedPackages, sentPackages } from "@/lib/data";
+import { apiFetch } from "@/lib/api";
+import {
+  readAccountContexts,
+  readActiveAccountContextId,
+  resolveActiveContextIdForUser,
+} from "@/lib/institutions";
 import {
   PlatformInstitution,
   PlatformUser,
   readPlatformInstitutions,
 } from "@/lib/adminData";
-import { packageDocumentTitle, readReceivedPackages, readSentPackages } from "@/lib/packages";
+import { readPackageTemplates } from "@/lib/packageTemplates";
+import { packageDocumentTitle, readReceivedPackages, readSentPackages, type PackageGroup, type ReceivedPackageGroup } from "@/lib/packages";
 
 type StoredUser = PlatformUser & {
   role?: string;
@@ -43,6 +49,7 @@ type TaxpayerView = {
   email?: string;
   phone?: string;
   address?: string;
+  linkedUserId?: number | null;
   sentCount: number;
   receivedCount: number;
 };
@@ -85,6 +92,14 @@ type SentHistoryRow = {
   documents: string[];
 };
 
+type DashboardDocument = {
+  id: number;
+  title: string;
+  type: string;
+  status: string;
+  size: string;
+};
+
 function readStoredUser(): StoredUser | null {
   if (typeof window === "undefined") return null;
 
@@ -121,48 +136,173 @@ function statusTone(status: string) {
   return "neutral";
 }
 
+function documentsStorageKey(contextId: string) {
+  return `docmanager_documents_${contextId}`;
+}
+
+function readDashboardDocuments(contextId: string): DashboardDocument[] {
+  if (typeof window === "undefined") {
+    return documents.map((document) => ({
+      id: document.id,
+      title: document.title,
+      type: document.type,
+      status: document.status,
+      size: document.size,
+    }));
+  }
+
+  const saved = window.localStorage.getItem(documentsStorageKey(contextId));
+
+  if (!saved) {
+    return contextId === "independent"
+      ? documents.map((document) => ({
+        id: document.id,
+        title: document.title,
+        type: document.type,
+        status: document.status,
+        size: document.size,
+      }))
+      : [];
+  }
+
+  try {
+    const parsed = JSON.parse(saved) as Array<{ id: number; title: string; type?: string; category?: string; status?: string; size?: string }>;
+
+    if (Array.isArray(parsed)) {
+      return parsed.map((document) => ({
+        id: document.id,
+        title: document.title,
+        type: document.type ?? document.category ?? "Document",
+        status: document.status ?? "Inregistrat",
+        size: document.size ?? "fara marime",
+      }));
+    }
+  } catch {
+    window.localStorage.removeItem(documentsStorageKey(contextId));
+  }
+
+  return [];
+}
+
+function flattenReceived(contextId: string) {
+  if (typeof window === "undefined") return receivedPackages as ReceivedPackageGroup[];
+
+  return readReceivedPackages(contextId);
+}
+
+function flattenSent(contextId: string) {
+  if (typeof window === "undefined") return sentPackages as PackageGroup[];
+
+  return readSentPackages(contextId);
+}
+
 function formatInstitutionName(institution?: PlatformInstitution) {
   return institution?.name ?? "Institutia curenta";
 }
 
 function GenericDashboard() {
+  const [contextId, setContextId] = useState("independent");
+  const [contextName, setContextName] = useState("Activitate independenta");
+  const [dashboardDocuments, setDashboardDocuments] = useState<DashboardDocument[]>(
+    documents.map((document) => ({
+      id: document.id,
+      title: document.title,
+      type: document.type,
+      status: document.status,
+      size: document.size,
+    })),
+  );
+  const [received, setReceived] = useState<ReceivedPackageGroup[]>(receivedPackages as ReceivedPackageGroup[]);
+  const [sent, setSent] = useState<PackageGroup[]>(sentPackages as PackageGroup[]);
+  const [templateCount, setTemplateCount] = useState(0);
+
+  useEffect(() => {
+    function syncDashboard() {
+      const contexts = readAccountContexts();
+      const nextContextId = readActiveAccountContextId(contexts);
+      const nextContext = contexts.find((context) => context.id === nextContextId);
+
+      setContextId(nextContextId);
+      setContextName(nextContext?.name ?? "Activitate independenta");
+      setDashboardDocuments(readDashboardDocuments(nextContextId));
+      setReceived(flattenReceived(nextContextId));
+      setSent(flattenSent(nextContextId));
+      setTemplateCount(readPackageTemplates(nextContextId).length);
+    }
+
+    syncDashboard();
+    window.addEventListener("docmanager-account-context-change", syncDashboard);
+    window.addEventListener("storage", syncDashboard);
+
+    return () => {
+      window.removeEventListener("docmanager-account-context-change", syncDashboard);
+      window.removeEventListener("storage", syncDashboard);
+    };
+  }, []);
+
+  const receivedRows = received.flatMap((group) =>
+    group.packages.map((pkg) => ({
+      id: `received-${group.email}-${pkg.name}`,
+      title: pkg.name,
+      participant: group.from,
+      direction: "Primit",
+      date: pkg.date,
+      status: pkg.status,
+      count: pkg.documents.length,
+    })),
+  );
+  const sentRows = sent.flatMap((group) =>
+    group.packages.map((pkg) => ({
+      id: `sent-${group.email}-${pkg.name}`,
+      title: pkg.name,
+      participant: group.to,
+      direction: "Trimis",
+      date: pkg.date,
+      status: pkg.status,
+      count: pkg.documents.length,
+    })),
+  );
+  const activityRows = [...receivedRows, ...sentRows].slice(0, 6);
+  const pendingSignatureCount = activityRows.filter((row) => row.status.toLowerCase().includes("semn") && !row.status.toLowerCase().includes("semnat")).length;
+  const signedCount = activityRows.filter((row) => row.status.toLowerCase().includes("semnat") || row.status.toLowerCase().includes("primit")).length;
+
   return (
     <>
       <section className="page-head">
         <div>
-          <p className="eyebrow">Overview</p>
-          <h1>Platform Overview</h1>
-          <p className="muted">Snapshot rapid pentru fluxurile de documente, trimiteri si activitatea contului.</p>
+          <p className="eyebrow">Panou control</p>
+          <h1>Panou de control</h1>
+          <p className="muted">Activitatea contului pentru {contextName}: documente, pachete, semnari si actiuni recente.</p>
         </div>
         <Link href="/documents" className="secondary-button"><Filter size={18} /> Filtre avansate</Link>
       </section>
       <section className="stats-grid">
-        <article><Files /><strong>{documents.length}</strong><span>Total documente</span><em>+12%</em></article>
-        <article><FileInput /><strong>{receivedPackages.length}</strong><span>Pachete primite</span><em>Active</em></article>
-        <article><FileOutput /><strong>{sentPackages.length}</strong><span>Pachete trimise</span><em>Monitorizate</em></article>
-        <article className="dark-metric"><ShieldCheck /><strong>2FA</strong><span>Security</span><Link href="/profile#security">Activeaza</Link></article>
+        <article><Files /><strong>{dashboardDocuments.length}</strong><span>Documente</span><em>{contextId === "independent" ? "Personal" : "Context"}</em></article>
+        <article><FileInput /><strong>{receivedRows.length}</strong><span>Pachete primite</span><em>{pendingSignatureCount ? "De procesat" : "La zi"}</em></article>
+        <article><FileOutput /><strong>{sentRows.length}</strong><span>Pachete trimise</span><em>Urmăribile</em></article>
+        <article className="dark-metric"><ShieldCheck /><strong>{templateCount}</strong><span>Sabloane</span><Link href="/documents/templates">Vezi lista</Link></article>
       </section>
       <section className="dashboard-grid enterprise-dashboard-grid">
         <article className="panel performance-card">
           <div className="panel-title-row">
             <div>
-              <h2>System Performance</h2>
-              <p>Volum documente pe ultimele zile</p>
+              <h2>Flux documente</h2>
+              <p>Volum estimat pe baza activitatii din cont</p>
             </div>
             <span><i /> Trimiteri <i /> Primiri</span>
           </div>
           <div className="bar-chart" aria-label="Grafic volum documente">
-            {[42, 56, 68, 44, 55, 43, 82, 34].map((height, index) => (
+            {[dashboardDocuments.length + 18, receivedRows.length * 18 + 28, sentRows.length * 20 + 22, templateCount * 18 + 24, signedCount * 20 + 30, pendingSignatureCount * 24 + 26].map((height, index) => (
               <span key={index} style={{ "--bar-height": `${height}%` } as CSSProperties}><i /></span>
             ))}
           </div>
         </article>
         <article className="panel quick-insights">
-          <h2>Quick Insights</h2>
-          <div className="insight-row"><Zap /><span><strong>Transfer activ</strong><small>{sentPackages.length} fluxuri in lucru</small></span></div>
-          <div className="insight-row"><ShieldCheck /><span><strong>Compliance pass</strong><small>Documentele au status urmaribil</small></span></div>
-          <div className="insight-row"><Gauge /><span><strong>Procesare medie</strong><small>1.2s pe fisier legal</small></span></div>
-          <Link className="secondary-button" href="/documents/sent">Descarca raport</Link>
+          <h2>Indicatori rapizi</h2>
+          <div className="insight-row"><Zap /><span><strong>Fluxuri active</strong><small>{receivedRows.length + sentRows.length} pachete in istoric</small></span></div>
+          <div className="insight-row"><Signature /><span><strong>Semnari in asteptare</strong><small>{pendingSignatureCount} documente/pachete necesita atentie</small></span></div>
+          <div className="insight-row"><Gauge /><span><strong>Finalizate</strong><small>{signedCount} fluxuri marcate ca primite/semnate</small></span></div>
+          <Link className="secondary-button" href="/documents/sent">Vezi trimiteri</Link>
         </article>
       </section>
       <section className="recent-documents-card panel">
@@ -176,38 +316,46 @@ function GenericDashboard() {
           <span>Status</span>
           <span>Actiuni</span>
         </div>
-        {documents.slice(0, 3).map((document, index) => (
+        {dashboardDocuments.slice(0, 4).map((document) => (
           <article className="recent-document-row" key={document.id}>
             <span className="file-icon"><Files size={20} /></span>
             <div>
               <strong>{document.title}</strong>
               <small>{document.size}</small>
             </div>
-            <span>{index === 0 ? "Primaria Joita" : index === 1 ? "Demo Construct SRL" : "Independent"}</span>
-            <em className={index === 0 ? "signed" : index === 1 ? "review" : "pending"}>{index === 0 ? "Semnat" : index === 1 ? "Review" : "Pending"}</em>
+            <span>{contextName}</span>
+            <em className={statusTone(document.status)}>{document.status}</em>
             <Link href="/documents"><ArrowUpRight size={18} /></Link>
           </article>
         ))}
+        {dashboardDocuments.length === 0 ? <p className="empty-state-inline">Nu exista documente incarcate in contextul selectat.</p> : null}
       </section>
-      <section className="dashboard-grid">
-        <article className="panel">
-          <h2>Pachete primite recent</h2>
-          {receivedPackages.map((group) => (
-            <div className="package-row" key={group.email}>
-              <div>
-                <strong>{group.from}</strong>
-                <p>{group.packages[0].name} · {group.packages[0].documents.length} documente</p>
-              </div>
-              <Building2 size={18} />
-            </div>
-          ))}
+      <section className="dashboard-grid account-activity-grid">
+        <article className="panel dashboard-activity-card">
+          <div className="section-title-row">
+            <h2>Istoric activitate cont</h2>
+            <Link href="/documents/received">Vezi primite <ArrowUpRight size={16} /></Link>
+          </div>
+          <div className="dashboard-activity-list">
+            {activityRows.map((row) => (
+              <article key={row.id}>
+                <span className={row.direction === "Primit" ? "received" : "sent"}>{row.direction === "Primit" ? <FileInput size={17} /> : <FileOutput size={17} />}</span>
+                <div>
+                  <strong>{row.title}</strong>
+                  <small>{row.participant} · {row.count} documente · {row.date}</small>
+                </div>
+                <em className={statusTone(row.status)}>{row.status}</em>
+              </article>
+            ))}
+            {activityRows.length === 0 ? <p className="empty-state-inline">Nu exista activitate pentru contextul selectat.</p> : null}
+          </div>
         </article>
-        <article className="panel">
-          <h2>Urmatoarele actiuni</h2>
+        <article className="panel dashboard-actions-card">
+          <h2>Actiuni recomandate</h2>
           <div className="task-list">
-            <span>Finalizeaza profilul juridic</span>
-            <span>Activeaza verificarea in doi pasi</span>
-            <span>Pregateste fluxul pentru semnare digitala</span>
+            <span>{pendingSignatureCount ? "Verifica documentele care asteapta semnare" : "Nu ai semnari restante"}</span>
+            <span>Actualizeaza profilul pentru contextul selectat</span>
+            <span>Pregateste un sablon reutilizabil pentru trimiteri frecvente</span>
           </div>
         </article>
       </section>
@@ -227,104 +375,63 @@ function InstitutionDashboard({ user }: { user: StoredUser }) {
   const [isLoadingTaxpayers, setIsLoadingTaxpayers] = useState(false);
   const [selectedTaxpayerId, setSelectedTaxpayerId] = useState("");
   const [institution, setInstitution] = useState<PlatformInstitution | undefined>();
-  const [institutionId, setInstitutionId] = useState(user.linkedInstitutionIds?.[0] ?? "primaria-joita");
+  const [institutionId, setInstitutionId] = useState("");
   const [taxpayers, setTaxpayers] = useState<TaxpayerView[]>([]);
   const [detailTaxpayer, setDetailTaxpayer] = useState<TaxpayerView | null>(null);
   const [registryRows, setRegistryRows] = useState<RegistryRow[]>([]);
   const [sentRows, setSentRows] = useState<SentHistoryRow[]>([]);
 
   useEffect(() => {
-    const institutions = readPlatformInstitutions();
-    const nextInstitutionId = user.linkedInstitutionIds?.[0] ?? institutions[0]?.id ?? "primaria-joita";
-    const currentInstitution = institutions.find((item) => item.id === nextInstitutionId) ?? institutions[0];
-    const received = readReceivedPackages(nextInstitutionId);
-    const receivedRows = received.flatMap((group, groupIndex) =>
-      group.packages.map<RegistryRow>((pkg, packageIndex) => ({
-        id: `received-${groupIndex}-${packageIndex}`,
-        from: group.from,
-        email: group.email,
-        packageName: pkg.name,
-        purpose: packagePurpose(pkg),
-        date: pkg.date,
-        status: pkg.status,
-        documents: pkg.documents.map(packageDocumentTitle),
-      })),
-    );
-    const demoRows: RegistryRow[] = [
-      {
-        id: "demo-registry-popescu-1",
-        from: "Popescu Ion",
-        email: "pf.demo@docmanager.local",
-        packageName: "Actualizare date fiscale",
-        purpose: "Informare",
-        date: "16 iul. 2026",
-        status: "Inregistrat",
-        documents: ["Buletin", "Certificat nastere"],
-      },
-      {
-        id: "demo-registry-demo-construct",
-        from: "Demo Construct SRL",
-        email: "pj.demo@docmanager.local",
-        packageName: "Cerere certificat fiscal",
-        purpose: "Semnare",
-        date: "15 iul. 2026",
-        status: "Asteapta semnare",
-        documents: ["Cerere", "Certificat constatator"],
-      },
-      {
-        id: "demo-registry-popescu-2",
-        from: "Popescu Ion",
-        email: "pf.demo@docmanager.local",
-        packageName: "Declaratie proprietate",
-        purpose: "Semnare",
-        date: "12 iul. 2026",
-        status: "Semnat",
-        documents: ["Declaratie", "Extras CF"],
-      },
-    ];
-    const sent = readSentPackages(nextInstitutionId);
-    const flattenedSent = sent.flatMap((group, groupIndex) =>
-      group.packages.map<SentHistoryRow>((pkg, packageIndex) => ({
-        id: `sent-${groupIndex}-${packageIndex}`,
-        to: group.to,
-        email: group.email,
-        packageName: pkg.name,
-        purpose: packagePurpose(pkg),
-        date: pkg.date,
-        status: pkg.status,
-        documents: pkg.documents.map(packageDocumentTitle),
-      })),
-    );
-    const demoSent: SentHistoryRow[] = [
-      {
-        id: "demo-sent-popescu",
-        to: "Popescu Ion",
-        email: "pf.demo@docmanager.local",
-        packageName: "Instiintare taxe locale",
-        purpose: "Informare",
-        date: "14 iul. 2026",
-        status: "Documente primite",
-        documents: ["Decizie impunere"],
-      },
-      {
-        id: "demo-sent-company",
-        to: "Demo Construct SRL",
-        email: "pj.demo@docmanager.local",
-        packageName: "Solicitare documente urbanism",
-        purpose: "Semnare",
-        date: "10 iul. 2026",
-        status: "Partial semnate",
-        documents: ["Cerere urbanism", "Plan amplasament"],
-      },
-    ];
+    function syncInstitutionDashboard() {
+      const institutions = readPlatformInstitutions();
+      const nextInstitutionId = resolveActiveContextIdForUser(user);
+      const currentInstitution = institutions.find((item) => item.id === nextInstitutionId);
+      const received = readReceivedPackages(nextInstitutionId);
+      const receivedRows = received.flatMap((group, groupIndex) =>
+        group.packages.map<RegistryRow>((pkg, packageIndex) => ({
+          id: `received-${groupIndex}-${packageIndex}`,
+          from: group.from,
+          email: group.email,
+          packageName: pkg.name,
+          purpose: packagePurpose(pkg),
+          date: pkg.date,
+          status: pkg.status,
+          documents: pkg.documents.map(packageDocumentTitle),
+        })),
+      );
+      const sent = readSentPackages(nextInstitutionId);
+      const flattenedSent = sent.flatMap((group, groupIndex) =>
+        group.packages.map<SentHistoryRow>((pkg, packageIndex) => ({
+          id: `sent-${groupIndex}-${packageIndex}`,
+          to: group.to,
+          email: group.email,
+          packageName: pkg.name,
+          purpose: packagePurpose(pkg),
+          date: pkg.date,
+          status: pkg.status,
+          documents: pkg.documents.map(packageDocumentTitle),
+        })),
+      );
 
-    setInstitution(currentInstitution);
-    setInstitutionId(nextInstitutionId);
-    setRegistryRows([...receivedRows, ...demoRows]);
-    setSentRows([...flattenedSent, ...demoSent]);
+      setInstitution(currentInstitution);
+      setInstitutionId(nextInstitutionId);
+      setRegistryRows(receivedRows);
+      setSentRows(flattenedSent);
+    }
+
+    syncInstitutionDashboard();
+    window.addEventListener("storage", syncInstitutionDashboard);
+    window.addEventListener("docmanager-account-context-change", syncInstitutionDashboard);
+
+    return () => {
+      window.removeEventListener("storage", syncInstitutionDashboard);
+      window.removeEventListener("docmanager-account-context-change", syncInstitutionDashboard);
+    };
   }, [user]);
 
   useEffect(() => {
+    if (!institutionId) return;
+
     const controller = new AbortController();
     const params = new URLSearchParams({
       institutionId,
@@ -337,7 +444,7 @@ function InstitutionDashboard({ user }: { user: StoredUser }) {
     });
 
     setIsLoadingTaxpayers(true);
-    fetch(`/api/institution-taxpayers?${params.toString()}`, { signal: controller.signal })
+    apiFetch(`/api/institution-taxpayers?${params.toString()}`, { signal: controller.signal })
       .then((response) => response.json())
       .then((data: TaxpayerApiResponse) => {
         setTaxpayers(data.items);
@@ -387,22 +494,81 @@ function InstitutionDashboard({ user }: { user: StoredUser }) {
       return row.purpose === "Semnare" && !status.includes("semnat") && !status.includes("primit");
     }).length;
   };
+  const incomingDocumentCount = registryRows.reduce((total, row) => total + row.documents.length, 0);
+  const outgoingDocumentCount = sentRows.reduce((total, row) => total + row.documents.length, 0);
+  const totalDocumentCount = incomingDocumentCount + outgoingDocumentCount;
+  const activeFlows = [...registryRows, ...sentRows].filter((row) => {
+    const normalized = row.status.toLowerCase();
+    return normalized.includes("asteapta") || normalized.includes("partial") || normalized.includes("trimis");
+  }).length;
+  const chartValues = [
+    summary.total,
+    summary.persons,
+    summary.companies,
+    incomingDocumentCount,
+    outgoingDocumentCount,
+    activeFlows,
+  ];
+  const maxChartValue = Math.max(...chartValues, 1);
 
   return (
     <div className="institution-dashboard">
       <section className="page-head institution-page-head">
         <div>
-          <p className="eyebrow">Registratura</p>
+          <p className="eyebrow">Panou control</p>
           <h1>{formatInstitutionName(institution)}</h1>
-          <p className="muted">Gestioneaza contribuabilii, legaturile de cont si istoricul schimburilor pe CNP/CIF.</p>
+          <p className="muted">Rezumat rapid pentru documente, cetateni, pachete si actiuni recente.</p>
         </div>
-        <Link href="/documents/received" className="secondary-button"><FileInput size={18} /> Registratura intrari</Link>
+        <Link href="/institutie/registratura" className="secondary-button"><FileInput size={18} /> Lista documente</Link>
       </section>
 
       <section className="stats-grid institution-stats-grid">
-        <article><UsersRound /><strong>{summary.total}</strong><span>Contribuabili</span><em>In evidenta</em></article>
+        <article><UsersRound /><strong>{summary.total}</strong><span>Cetateni</span><em>In evidenta</em></article>
         <article><UserRound /><strong>{summary.persons}</strong><span>Persoane fizice</span><em>CNP mapat</em></article>
         <article><Landmark /><strong>{summary.companies}</strong><span>Persoane juridice</span><em>CIF/CUI</em></article>
+      </section>
+
+      <section className="stats-grid institution-document-stats">
+        <article><FileInput /><strong>{incomingDocumentCount}</strong><span>Documente intrate</span><em>Registratura</em></article>
+        <article><FileOutput /><strong>{outgoingDocumentCount}</strong><span>Documente iesite</span><em>Trimise</em></article>
+        <article><Files /><strong>{totalDocumentCount}</strong><span>Total documente</span><em>Activitate cont</em></article>
+      </section>
+
+      <section className="institution-analytics-grid">
+        <article className="panel institution-chart-card">
+          <div className="institution-panel-head">
+            <div>
+              <p className="eyebrow">Activitate</p>
+              <h2>Volum operational</h2>
+            </div>
+            <span>{activeFlows} fluxuri active</span>
+          </div>
+          <div className="mini-bar-chart" aria-label="Grafic activitate institutie">
+            {chartValues.map((value, index) => (
+              <span
+                // eslint-disable-next-line react/no-array-index-key
+                key={index}
+                style={{ "--bar-height": `${Math.max(16, Math.round((value / maxChartValue) * 100))}%` } as CSSProperties}
+              >
+                <em>{["Total", "PF", "PJ", "Intrate", "Iesite", "Activi"][index]}</em>
+              </span>
+            ))}
+          </div>
+        </article>
+        <article className="panel institution-chart-card compact">
+          <div className="institution-panel-head">
+            <div>
+              <p className="eyebrow">Registratura</p>
+              <h2>Stare curenta</h2>
+            </div>
+            <Gauge size={20} />
+          </div>
+          <div className="dashboard-status-stack">
+            <span><strong>{registryRows.length}</strong> pachete intrate</span>
+            <span><strong>{sentRows.length}</strong> pachete iesite</span>
+            <span><strong>{activeFlows}</strong> in procesare</span>
+          </div>
+        </article>
       </section>
 
       <section className="institution-workspace">
@@ -410,7 +576,7 @@ function InstitutionDashboard({ user }: { user: StoredUser }) {
           <div className="institution-panel-head">
             <div>
               <p className="eyebrow">Baza locala</p>
-              <h2>Cetateni si companii</h2>
+              <h2>Cetateni recenti</h2>
             </div>
             <span>{isLoadingTaxpayers ? "Se incarca..." : `${totalResults} rezultate`}</span>
           </div>
@@ -430,7 +596,7 @@ function InstitutionDashboard({ user }: { user: StoredUser }) {
             </div>
             <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}>
               <option value="all">Toate statusurile</option>
-              <option value="legat">Cont legat</option>
+              <option value="legat">Cont activ</option>
               <option value="nelegat">Fara cont</option>
             </select>
             <select value={accountKindFilter} onChange={(event) => setAccountKindFilter(event.target.value)}>
@@ -461,7 +627,7 @@ function InstitutionDashboard({ user }: { user: StoredUser }) {
                     </span>
                   </button>
                   <span className="taxpayer-row-meta">
-                    <em className={taxpayer.status === "legat" ? "linked" : "unlinked"}>{taxpayer.status === "legat" ? "Cont legat" : "Fara cont"}</em>
+                    <em className={taxpayer.status === "legat" ? "linked" : "unlinked"}>{taxpayer.status === "legat" ? "Cont activ" : "Fara cont"}</em>
                     <small>{pendingCount} in asteptare semnare</small>
                   </span>
                   <span className="taxpayer-row-counts">
@@ -472,7 +638,7 @@ function InstitutionDashboard({ user }: { user: StoredUser }) {
                 </article>
               );
             })}
-            {!isLoadingTaxpayers && taxpayers.length === 0 ? <p className="empty-state-inline">Nu exista contribuabili pentru filtrele selectate.</p> : null}
+            {!isLoadingTaxpayers && taxpayers.length === 0 ? <p className="empty-state-inline">Nu exista cetateni pentru filtrele selectate.</p> : null}
           </div>
           <div className="institution-pagination">
             <span>Afisare {taxpayers.length ? (page - 1) * 20 + 1 : 0}-{(page - 1) * 20 + taxpayers.length} din {totalResults}</span>
@@ -488,7 +654,7 @@ function InstitutionDashboard({ user }: { user: StoredUser }) {
       {detailTaxpayer ? (
         <div className="modal-backdrop" role="dialog" aria-modal="true">
           <section className="modal-panel taxpayer-detail-modal">
-            <button className="modal-close" type="button" aria-label="Inchide detaliile contribuabilului" onClick={() => setDetailTaxpayer(null)}>
+            <button className="modal-close" type="button" aria-label="Inchide detaliile cetateanului" onClick={() => setDetailTaxpayer(null)}>
               <X size={22} />
             </button>
             <div className="taxpayer-profile-card">
@@ -507,13 +673,16 @@ function InstitutionDashboard({ user }: { user: StoredUser }) {
               </div>
             </div>
             <div className="taxpayer-modal-actions">
-              <Link className="secondary-button" href={`/institutie/cetateni/${detailTaxpayer.id}`}>
-                Profil contribuabil <ArrowUpRight size={16} />
+              <span className="taxpayer-linked-account-id">
+                ID cont platforma: <strong>{detailTaxpayer.linkedUserId ? `user-${detailTaxpayer.linkedUserId}` : "fara cont legat"}</strong>
+              </span>
+              <Link className="secondary-button citizen-profile-link" href={`/institutie/cetateni/${detailTaxpayer.id}`}>
+                Profil cetatean <ArrowUpRight size={16} />
               </Link>
             </div>
             <div className="taxpayer-history-grid">
               <div>
-                <h3>Documente primite de la contribuabil</h3>
+                <h3>Documente primite de la cetatean</h3>
                 <div className="taxpayer-history-list">
                   {detailIncoming.length ? detailIncoming.map((row) => (
                     <article key={row.id}>
@@ -521,11 +690,11 @@ function InstitutionDashboard({ user }: { user: StoredUser }) {
                       <span><strong>{row.packageName}</strong><small>{row.date} · {row.documents.join(", ")}</small></span>
                       <em className={`registry-status ${statusTone(row.status)}`}>{row.status}</em>
                     </article>
-                  )) : <p className="empty-state-inline">Nu exista documente primite de la acest contribuabil.</p>}
+                  )) : <p className="empty-state-inline">Nu exista documente primite de la acest cetatean.</p>}
                 </div>
               </div>
               <div>
-                <h3>Documente trimise catre contribuabil</h3>
+                <h3>Documente trimise catre cetatean</h3>
                 <div className="taxpayer-history-list">
                   {detailOutgoing.length ? detailOutgoing.map((row) => (
                     <article key={row.id}>
@@ -533,7 +702,7 @@ function InstitutionDashboard({ user }: { user: StoredUser }) {
                       <span><strong>{row.packageName}</strong><small>{row.date} · {row.documents.join(", ")}</small></span>
                       <em className={`registry-status ${statusTone(row.status)}`}>{row.status}</em>
                     </article>
-                  )) : <p className="empty-state-inline">Nu exista documente trimise catre acest contribuabil.</p>}
+                  )) : <p className="empty-state-inline">Nu exista documente trimise catre acest cetatean.</p>}
                 </div>
               </div>
             </div>

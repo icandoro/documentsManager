@@ -3,8 +3,12 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ArrowLeft, Building2, FileInput, FileOutput, UserRound } from "lucide-react";
+import { readTaxpayerCompanies, readTaxpayerPersons } from "@/lib/adminData";
+import { apiFetch } from "@/lib/api";
+import { resolveActiveContextIdForUser } from "@/lib/institutions";
 
 type StoredUser = {
+  accountType?: string;
   linkedInstitutionIds?: string[];
 };
 
@@ -24,14 +28,14 @@ type TaxpayerProfile = {
 };
 
 function readInstitutionId() {
-  if (typeof window === "undefined") return "primaria-joita";
+  if (typeof window === "undefined") return "";
 
   try {
     const saved = window.localStorage.getItem("docmanager_user");
     const user = saved ? JSON.parse(saved) as StoredUser : null;
-    return user?.linkedInstitutionIds?.[0] ?? "primaria-joita";
+    return resolveActiveContextIdForUser(user);
   } catch {
-    return "primaria-joita";
+    return "";
   }
 }
 
@@ -43,16 +47,66 @@ function accountKindLabel(kind: string) {
   return "Nespecificat";
 }
 
+function readLocalTaxpayer(institutionId: string, taxpayerId: string): TaxpayerProfile | null {
+  const person = readTaxpayerPersons().find((item) => item.institutionId === institutionId && item.id === taxpayerId);
+
+  if (person) {
+    return {
+      id: person.id,
+      type: "person",
+      name: person.name,
+      identifier: person.cnp,
+      locality: person.locality,
+      status: person.status,
+      email: person.email,
+      phone: person.phone,
+      address: [person.street, person.streetNumber, person.buildingNumber, person.apartment, person.locality].filter(Boolean).join(", "),
+      sentCount: 0,
+      receivedCount: 0,
+      accountKind: person.accountKind ?? "",
+    };
+  }
+
+  const company = readTaxpayerCompanies().find((item) => item.institutionId === institutionId && item.id === taxpayerId);
+
+  if (company) {
+    return {
+      id: company.id,
+      type: "company",
+      name: company.name,
+      identifier: company.cif,
+      locality: company.locality,
+      status: company.status,
+      email: company.email,
+      phone: company.phone,
+      address: [company.street, company.streetNumber, company.buildingNumber, company.apartment, company.locality].filter(Boolean).join(", "),
+      sentCount: 0,
+      receivedCount: 0,
+      accountKind: company.accountKind ?? "",
+    };
+  }
+
+  return null;
+}
+
 export function TaxpayerProfileManager({ taxpayerId }: { taxpayerId: string }) {
   const [taxpayer, setTaxpayer] = useState<TaxpayerProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const institutionId = readInstitutionId();
+    const localTaxpayer = readLocalTaxpayer(institutionId, taxpayerId);
+
+    if (localTaxpayer) {
+      setTaxpayer(localTaxpayer);
+      setLoading(false);
+      return;
+    }
+
     const params = new URLSearchParams({ institutionId, id: taxpayerId, limit: "1" });
 
     setLoading(true);
-    fetch(`/api/institution-taxpayers?${params.toString()}`)
+    apiFetch(`/api/institution-taxpayers?${params.toString()}`)
       .then((response) => response.json())
       .then((data: { items: TaxpayerProfile[] }) => setTaxpayer(data.items[0] ?? null))
       .finally(() => setLoading(false));
@@ -62,11 +116,11 @@ export function TaxpayerProfileManager({ taxpayerId }: { taxpayerId: string }) {
 
   return (
     <section className="taxpayer-profile-page">
-      <Link className="back-link" href="/dashboard"><ArrowLeft size={18} /> Inapoi la registratura</Link>
+      <Link className="back-link" href="/institutie/cetateni"><ArrowLeft size={18} /> Inapoi la lista cetateni</Link>
       <div className="page-head taxpayer-profile-head">
         <div>
-          <p className="eyebrow">Profil contribuabil</p>
-          <h1>{loading ? "Se incarca..." : taxpayer?.name ?? "Contribuabil negasit"}</h1>
+          <p className="eyebrow">Profil cetatean</p>
+          <h1>{loading ? "Se incarca..." : taxpayer?.name ?? "Cetatean negasit"}</h1>
           <p className="muted">Date personale, legatura cu institutia si sumarul schimburilor de documente.</p>
         </div>
       </div>
@@ -77,7 +131,7 @@ export function TaxpayerProfileManager({ taxpayerId }: { taxpayerId: string }) {
             <span className="taxpayer-profile-icon"><Icon size={30} /></span>
             <div>
               <span className={taxpayer.status === "legat" ? "status-chip signed" : "status-chip review"}>
-                {taxpayer.status === "legat" ? "Cont legat" : "Fara cont"}
+                {taxpayer.status === "legat" ? "Cont activ" : "Fara cont"}
               </span>
               <h2>{taxpayer.name}</h2>
               <p>{taxpayer.type === "person" ? "CNP" : "CIF"} {taxpayer.identifier}</p>
@@ -104,7 +158,7 @@ export function TaxpayerProfileManager({ taxpayerId }: { taxpayerId: string }) {
           </article>
         </div>
       ) : !loading ? (
-        <p className="empty-state-inline">Nu am gasit acest contribuabil pentru institutia curenta.</p>
+        <p className="empty-state-inline">Nu am gasit acest cetatean pentru institutia curenta.</p>
       ) : null}
     </section>
   );

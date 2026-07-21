@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, FileUp, Hourglass, Landmark, ShieldCheck } from "lucide-react";
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
+import { apiFetch } from "@/lib/api";
 
 type InstitutionDocumentKey = "signedRequest" | "proofDocuments" | "delegateDocument";
 
@@ -41,12 +42,13 @@ const requiredDocuments: Array<{
 export function InstitutionOnboarding() {
   const router = useRouter();
   const [registration, setRegistration] = useState<PendingRegistration | null>(null);
-  const [documents, setDocuments] = useState<Record<InstitutionDocumentKey, string>>({
-    signedRequest: "",
-    proofDocuments: "",
-    delegateDocument: "",
+  const [files, setFiles] = useState<Record<InstitutionDocumentKey, File | null>>({
+    signedRequest: null,
+    proofDocuments: null,
+    delegateDocument: null,
   });
   const [submitted, setSubmitted] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -55,29 +57,59 @@ export function InstitutionOnboarding() {
   }, []);
 
   function handleFile(key: InstitutionDocumentKey, event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    setDocuments((current) => ({ ...current, [key]: file?.name ?? "" }));
+    const file = event.target.files?.[0] ?? null;
+    setFiles((current) => ({ ...current, [key]: file }));
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
 
-    const missingDocument = requiredDocuments.find((document) => !documents[document.key]);
+    const missingDocument = requiredDocuments.find((document) => !files[document.key]);
     if (missingDocument) {
       setError(`Incarca documentul: ${missingDocument.title}.`);
       return;
     }
 
-    window.localStorage.setItem("docmanager_institution_onboarding", JSON.stringify({
-      email: registration?.email ?? null,
-      company: registration?.company ?? null,
-      documents,
-      status: "pending_admin_review",
-      submittedAt: new Date().toISOString(),
-    }));
-    setSubmitted(true);
-    setTimeout(() => router.push("/onboarding/pending-approval"), 700);
+    if (typeof window !== "undefined" && !window.localStorage.getItem("docmanager_token")) {
+      setError("Sesiunea de autentificare a expirat. Reintra in cont si reincearca.");
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    const formData = new FormData();
+    requiredDocuments.forEach((document) => {
+      const file = files[document.key];
+      if (file) formData.append(document.key, file);
+    });
+
+    try {
+      const response = await apiFetch("/api/institutions/onboarding/documents", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        setError(data.message ?? "Documentele nu au putut fi trimise. Incearca din nou.");
+        return;
+      }
+
+      window.localStorage.setItem("docmanager_institution_onboarding", JSON.stringify({
+        email: registration?.email ?? null,
+        company: registration?.company ?? null,
+        documents: data.documents ?? {},
+        status: "pending_admin_review",
+        submittedAt: new Date().toISOString(),
+      }));
+      setSubmitted(true);
+      setTimeout(() => router.push("/onboarding/pending-approval"), 700);
+    } catch {
+      setError("Nu pot contacta backend-ul. Verifica daca serviciile Docker sunt pornite.");
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   return (
@@ -119,14 +151,16 @@ export function InstitutionOnboarding() {
                 <span>
                   <strong>{document.title}</strong>
                   <small>{document.description}</small>
-                  {documents[document.key] && <em>{documents[document.key]}</em>}
+                  {files[document.key] && <em>{files[document.key]?.name}</em>}
                 </span>
                 <input type="file" onChange={(event) => handleFile(document.key, event)} />
               </label>
             ))}
             {error && <p className="form-alert error">{error}</p>}
             <p className="form-alert info"><Hourglass size={18} /> Dupa trimitere, statusul contului devine: in verificare administrator.</p>
-            <button className="primary-button" type="submit">Trimite pentru aprobare</button>
+            <button className="primary-button" type="submit" disabled={isSubmitting}>
+              {isSubmitting ? "Se trimite..." : "Trimite pentru aprobare"}
+            </button>
           </form>
         )}
       </section>

@@ -1,7 +1,7 @@
 "use client";
 
 import { readAccountContexts, readActiveAccountContextId } from "@/lib/institutions";
-import { normalizePackageDocument, PackageGroup, readReceivedPackages, ReceivedPackageGroup, statusTone, writeReceivedPackages } from "@/lib/packages";
+import { normalizePackageDocument, packageDocumentIdentity, PackageGroup, readReceivedPackages, ReceivedPackageGroup, statusTone, writeReceivedPackages } from "@/lib/packages";
 import { CheckCircle2, ChevronLeft, ChevronRight, Download, FileInput, FileSignature, Search, SlidersHorizontal, Trash2, UploadCloud, X } from "lucide-react";
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -23,7 +23,7 @@ type ReceivedRow = {
 
 type DeleteTarget =
   | { kind: "package"; row: ReceivedRow }
-  | { kind: "document"; row: ReceivedRow; documentTitle: string };
+  | { kind: "document"; row: ReceivedRow; documentId: string; documentTitle: string };
 
 function deletedPackagesStorageKey(contextId: string) {
   return `docmanager_deleted_received_packages_${contextId}`;
@@ -53,8 +53,8 @@ function packageDeleteKey(row: Pick<ReceivedRow, "email" | "packageName" | "date
   return `${row.email}::${row.packageName}::${row.date}`;
 }
 
-function documentDeleteKey(row: Pick<ReceivedRow, "email" | "packageName" | "date">, documentTitle: string) {
-  return `${packageDeleteKey(row)}::${documentTitle}`;
+function documentDeleteKey(row: Pick<ReceivedRow, "email" | "packageName" | "date">, documentId: string) {
+  return `${packageDeleteKey(row)}::${documentId}`;
 }
 
 function packageStatusForDocuments(documents: ReturnType<typeof normalizePackageDocument>[], fallback: string) {
@@ -82,7 +82,12 @@ function flattenGroups(groups: ReceivedPackageGroup[]): ReceivedRow[] {
         purpose: isSignaturePackage ? "Semnare documente" : "Doar trimitere",
         status: packageStatusForDocuments(pkg.documents.map((document) => normalizePackageDocument(document, pkg.purpose)), pkg.status),
         isSignaturePackage,
-        documents: pkg.documents.map((document) => normalizePackageDocument(document, pkg.purpose)),
+        documents: pkg.documents.map((document, documentIndex) => {
+          const fallbackId = `${group.email}-${pkg.name}-${pkg.date}-${documentIndex}`;
+          const normalized = normalizePackageDocument(document, pkg.purpose);
+
+          return { ...normalized, id: packageDocumentIdentity(document, fallbackId) };
+        }),
       };
     }),
   );
@@ -155,7 +160,7 @@ export function ReceivedPackagesManager() {
     .filter((row) => !deletedPackageKeys.includes(packageDeleteKey(row)))
     .map((row) => ({
       ...row,
-      documents: row.documents.filter((document) => !deletedDocumentKeys.includes(documentDeleteKey(row, document.title))),
+      documents: row.documents.filter((document) => !deletedDocumentKeys.includes(documentDeleteKey(row, String(document.id)))),
     }))
     .filter((row) => row.documents.length > 0), [deletedDocumentKeys, deletedPackageKeys, groups]);
   const statusOptions = useMemo(() => Array.from(new Set(rows.map((row) => row.status))), [rows]);
@@ -205,7 +210,7 @@ export function ReceivedPackagesManager() {
     });
   }
 
-  function handleSignedUpload(sender: ReceivedPackageGroup, packageName: string, documentTitle: string, event: ChangeEvent<HTMLInputElement>) {
+  function handleSignedUpload(sender: ReceivedPackageGroup, packageName: string, documentId: string, documentTitle: string, event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
 
@@ -220,11 +225,13 @@ export function ReceivedPackagesManager() {
       const packages = group.packages.map((pkg) => {
         if (pkg.name !== packageName) return pkg;
 
-        const documents = pkg.documents.map((document) => {
+        const documents = pkg.documents.map((document, documentIndex) => {
+          const fallbackId = `${sender.email}-${pkg.name}-${pkg.date}-${documentIndex}`;
           const normalized = normalizePackageDocument(document, pkg.purpose);
-          if (normalized.title !== documentTitle) return normalized;
+          const normalizedId = packageDocumentIdentity(document, fallbackId);
+          if (normalizedId !== documentId) return { ...normalized, id: normalizedId };
 
-          return { ...normalized, status: "Semnat", signedFile: file.name, signedAt };
+          return { ...normalized, id: normalizedId, status: "Semnat", signedFile: file.name, signedAt };
         });
 
         return { ...pkg, documents, status: packageStatusForDocuments(documents, pkg.status) };
@@ -242,11 +249,17 @@ export function ReceivedPackagesManager() {
       const packages = group.packages.map((pkg) => {
         if (pkg.name !== packageName) return pkg;
 
-        const documents = pkg.documents.map((document) => ({
-          ...normalizePackageDocument(document, pkg.purpose),
-          status: "Primire confirmata",
-          receivedAt,
-        }));
+        const documents = pkg.documents.map((document, documentIndex) => {
+          const fallbackId = `${sender.email}-${pkg.name}-${pkg.date}-${documentIndex}`;
+          const normalized = normalizePackageDocument(document, pkg.purpose);
+
+          return {
+            ...normalized,
+            id: packageDocumentIdentity(document, fallbackId),
+            status: "Primire confirmata",
+            receivedAt,
+          };
+        });
 
         return { ...pkg, documents, status: "Documente primite" };
       });
@@ -286,8 +299,8 @@ export function ReceivedPackagesManager() {
       return;
     }
 
-    const key = documentDeleteKey(deleteTarget.row, deleteTarget.documentTitle);
-    const remainingDocuments = deleteTarget.row.documents.filter((document) => document.title !== deleteTarget.documentTitle);
+    const key = documentDeleteKey(deleteTarget.row, deleteTarget.documentId);
+    const remainingDocuments = deleteTarget.row.documents.filter((document) => String(document.id) !== deleteTarget.documentId);
 
     persistDeletedDocument(key);
     setSelectedRow((current) => {
@@ -399,7 +412,7 @@ export function ReceivedPackagesManager() {
             </div>
             <div className="modal-doc-list">
               {selectedRow.documents.map((document) => (
-                <article className="modal-doc-row" key={document.title}>
+                <article className="modal-doc-row" key={String(document.id)}>
                   <div className="modal-doc-main">
                     <FileSignature size={18} />
                     <div>
@@ -415,13 +428,13 @@ export function ReceivedPackagesManager() {
                     <button className="secondary-button modal-doc-action" type="button" onClick={() => downloadDocument(document.title)}>
                       <Download size={16} /> Descarca
                     </button>
-                    <button className="secondary-button danger-soft modal-doc-action" type="button" onClick={() => setDeleteTarget({ kind: "document", row: selectedRow, documentTitle: document.title })}>
+                    <button className="secondary-button danger-soft modal-doc-action" type="button" onClick={() => setDeleteTarget({ kind: "document", row: selectedRow, documentId: String(document.id), documentTitle: document.title })}>
                       <Trash2 size={16} /> Sterge
                     </button>
                     {selectedRow.isSignaturePackage && document.status !== "Semnat" && (
                       <label className="secondary-button upload-signed">
                         <UploadCloud size={16} /> PDF semnat
-                        <input type="file" accept="application/pdf,.pdf" onChange={(event) => handleSignedUpload(selectedRow.sender, selectedRow.packageName, document.title, event)} />
+                        <input type="file" accept="application/pdf,.pdf" onChange={(event) => handleSignedUpload(selectedRow.sender, selectedRow.packageName, String(document.id), document.title, event)} />
                       </label>
                     )}
                   </div>

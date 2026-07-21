@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Bell, Building2, CheckCircle2, ChevronDown, ClipboardList, FileInput, FileOutput, Files, Grid3X3, HelpCircle, Home, Info, Landmark, LogOut, Menu, Search, Settings, Shield, ShieldAlert, ShieldCheck, Upload, UserCog, UserRound, UsersRound, X, type LucideIcon } from "lucide-react";
+import { Bell, Building2, CheckCircle2, ChevronDown, ClipboardList, FileInput, FileOutput, Files, Grid3X3, HelpCircle, Home, Info, Landmark, LogOut, Menu, Search, Settings, Shield, ShieldAlert, ShieldCheck, Upload, UserCog, UserRound, Users, UsersRound, X, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   AccountContext,
@@ -10,7 +10,7 @@ import {
   readActiveAccountContextId,
   writeActiveAccountContextId,
 } from "@/lib/institutions";
-import { AppNotification, markAllNotificationsRead, readNotifications, unreadNotificationsCount } from "@/lib/notifications";
+import { AppNotification, markAllNotificationsRead, markNotificationRead, readNotifications, unreadNotificationsCount } from "@/lib/notifications";
 import { documents as seedDocuments } from "@/lib/data";
 import { readPackageTemplates } from "@/lib/packageTemplates";
 import { packageDocumentTitle, readReceivedPackages, readSentPackages } from "@/lib/packages";
@@ -27,6 +27,7 @@ type NavItem = {
 };
 
 const nav: NavItem[] = [
+  { href: "/dashboard", label: "Panou control", icon: Home },
   { href: "/documents", label: "Documente", icon: Files, children: [
     { href: "/documents", label: "Fisierele mele" },
     { href: "/documents/received", label: "Partajate" },
@@ -35,21 +36,22 @@ const nav: NavItem[] = [
   { href: "/documents/received", label: "Primite", icon: FileInput },
   { href: "/documents/sent", label: "Trimise", icon: FileOutput },
   { href: "/profile", label: "Profil", icon: UserRound },
-  { href: "/profile#security", label: "Security", icon: Shield }
+  { href: "/profile#security", label: "Securitate", icon: Shield }
 ];
 
 const superAdminNav: NavItem = { href: "/admin", label: "Administrare", icon: ShieldCheck };
 const superAdminOnlyNav: NavItem[] = [
-  { href: "/admin#users", label: "Users", icon: UserRound },
-  { href: "/admin#institutions", label: "Institutions", icon: Building2 },
-  { href: "/admin#persons", label: "Individuals", icon: UserRound },
-  { href: "/admin#companies", label: "Legal Entities", icon: Landmark },
-  { href: "/admin#relations", label: "Imports", icon: FileInput },
+  { href: "/admin", label: "Dashboard", icon: Home },
+  { href: "/admin/utilizatori", label: "Administratori", icon: UserCog },
+  { href: "/admin/toti-utilizatorii", label: "Toti utilizatorii", icon: Users },
+  { href: "/admin/institutii", label: "Institutii", icon: Building2 },
+  { href: "/admin/securitate", label: "Securitate", icon: ShieldCheck },
 ];
 
 const institutionNav: NavItem[] = [
-  { href: "/dashboard", label: "Registratura", icon: ClipboardList },
-  { href: "/institutie/cetateni", label: "Cetateni si companii", icon: UsersRound },
+  { href: "/dashboard", label: "Panou control", icon: Home },
+  { href: "/institutie/registratura", label: "Registratura", icon: ClipboardList },
+  { href: "/institutie/cetateni", label: "Cetateni", icon: UsersRound },
   { href: "/documents/received", label: "Documente intrate", icon: FileInput },
   { href: "/documents/sent", label: "Documente trimise", icon: FileOutput },
   { href: "/documents", label: "Documente", icon: Files, children: [
@@ -57,7 +59,7 @@ const institutionNav: NavItem[] = [
     { href: "/documents/templates", label: "Sabloane" },
   ] },
   { href: "/profile", label: "Profil institutie", icon: Building2 },
-  { href: "/profile#security", label: "Security", icon: Shield },
+  { href: "/profile#security", label: "Securitate", icon: Shield },
 ];
 
 type StoredUser = {
@@ -68,6 +70,8 @@ type StoredUser = {
   accountType?: "individual" | "company" | "institution";
   linkedInstitutionIds?: string[];
   avatarUrl?: string;
+  accountCode?: string;
+  clientCode?: string;
 };
 
 type GlobalSearchResult = {
@@ -87,17 +91,12 @@ type SearchDocument = {
 };
 
 const adminMobileNav = [
-  { href: "/admin#users", label: "Users", icon: UserRound },
-  { href: "/admin#institutions", label: "Institutions", icon: Landmark },
-  { href: "/admin#relations", label: "Imports", icon: FileInput },
-  { href: "/admin#users", label: "Profile", icon: UserCog },
+  { href: "/admin", label: "Dashboard", icon: Home },
+  { href: "/admin/utilizatori", label: "Administratori", icon: UserCog },
+  { href: "/admin/toti-utilizatorii", label: "Toti utilizatorii", icon: Users },
+  { href: "/admin/institutii", label: "Institutii", icon: Landmark },
+  { href: "/admin/securitate", label: "Securitate", icon: ShieldCheck },
 ];
-
-function adminSectionFromHash() {
-  if (typeof window === "undefined") return "users";
-
-  return window.location.hash.replace("#", "") || "users";
-}
 
 function readStoredRole() {
   if (typeof window === "undefined") return "user";
@@ -201,7 +200,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [activeContextId, setActiveContextId] = useState("independent");
   const [role, setRole] = useState("user");
   const [user, setUser] = useState<StoredUser>({ name: "Popescu Ion", email: "ion.popescu@example.com", role: "user" });
-  const [adminSection, setAdminSection] = useState("users");
   const [expandedNav, setExpandedNav] = useState<Record<string, boolean>>({ "/documents": true });
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
@@ -275,18 +273,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     writeActiveAccountContextId(id);
   }
 
-  function handleAdminNavigation(href: string) {
-    if (pathname !== "/admin") {
-      router.push(href);
-    } else {
-      window.history.pushState(null, "", href);
-      window.dispatchEvent(new HashChangeEvent("hashchange"));
-    }
-
-    setIsMenuOpen(false);
-    setAdminSection(href.split("#")[1] ?? "users");
-  }
-
   function closeSidebar() {
     setIsMenuOpen(false);
     setIsSidebarCollapsed(true);
@@ -322,13 +308,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const visibleNav = isSuperAdmin ? superAdminOnlyNav : isInstitutionAccount ? institutionNav : [...nav, ...(role === "admin" ? [superAdminNav] : [])];
   const unreadCount = unreadNotificationsCount(notifications);
   const moduleLinks = isSuperAdmin ? [
-    { href: "/admin#users", label: "Utilizatori", icon: UserRound },
-    { href: "/admin#institutions", label: "Institutii", icon: Landmark },
-    { href: "/admin#relations", label: "Importuri", icon: FileInput },
+    { href: "/admin", label: "Dashboard", icon: Home },
+    { href: "/admin/utilizatori", label: "Administratori", icon: UserCog },
+    { href: "/admin/toti-utilizatorii", label: "Toti utilizatorii", icon: Users },
+    { href: "/admin/institutii", label: "Institutii", icon: Landmark },
+    { href: "/admin/securitate", label: "Securitate", icon: ShieldCheck },
     { href: "/notifications", label: "Alerte", icon: Bell },
   ] : isInstitutionAccount ? [
-    { href: "/dashboard", label: "Registratura", icon: ClipboardList },
-    { href: "/institutie/cetateni", label: "Cetateni si companii", icon: UsersRound },
+    { href: "/dashboard", label: "Panou control", icon: Home },
+    { href: "/institutie/registratura", label: "Registratura", icon: ClipboardList },
+    { href: "/institutie/cetateni", label: "Cetateni", icon: UsersRound },
     { href: "/documents/received", label: "Documente intrate", icon: FileInput },
     { href: "/notifications", label: "Alerte", icon: Bell },
   ] : [
@@ -339,7 +328,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   ];
 
   useEffect(() => {
-    if (!isInstitutionAccount || !institutionContextId || activeContextId === institutionContextId) {
+    if (!isInstitutionAccount || !institutionContextId || user.linkedInstitutionIds?.includes(activeContextId)) {
       return;
     }
 
@@ -378,7 +367,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           id: `admin-user-${platformUser.id}`,
           title: platformUser.name,
           description: `${platformUser.email} · ${platformUser.cnp ?? platformUser.cif ?? "fara identificator"} · ${platformUser.status}`,
-          href: "/admin#users",
+          href: "/admin/utilizatori",
           type: "admin",
           icon: UserRound,
         });
@@ -388,7 +377,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           id: `admin-institution-${institution.id}`,
           title: institution.name,
           description: `${institution.locality} · CIF ${institution.cif} · ${institution.status}`,
-          href: "/admin#institutions",
+          href: "/admin/institutii",
           type: "admin",
           icon: Landmark,
         });
@@ -398,7 +387,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           id: `admin-person-${person.id}`,
           title: person.name,
           description: `CNP ${person.cnp} · ${person.locality} · ${person.status}`,
-          href: "/admin#persons",
+          href: "/admin/utilizatori",
           type: "admin",
           icon: UserRound,
         });
@@ -408,7 +397,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           id: `admin-company-${company.id}`,
           title: company.name,
           description: `CIF ${company.cif} · ${company.locality} · ${company.status}`,
-          href: "/admin#companies",
+          href: "/admin/utilizatori",
           type: "admin",
           icon: Building2,
         });
@@ -489,30 +478,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setGlobalSearchQuery("");
     setIsGlobalSearchOpen(false);
 
-    if (result.href.startsWith("/admin#")) {
-      handleAdminNavigation(result.href);
-      return;
-    }
-
     router.push(result.href);
   }
 
   useEffect(() => {
-    if (isSuperAdmin && pathname !== "/admin") {
-      router.replace("/admin#users");
+    if (isSuperAdmin && !pathname.startsWith("/admin") && pathname !== "/notifications" && !pathname.startsWith("/legal")) {
+      router.replace("/admin");
     }
   }, [isSuperAdmin, pathname, router]);
-
-  useEffect(() => {
-    function syncAdminSection() {
-      setAdminSection(adminSectionFromHash());
-    }
-
-    syncAdminSection();
-    window.addEventListener("hashchange", syncAdminSection);
-
-    return () => window.removeEventListener("hashchange", syncAdminSection);
-  }, []);
 
   if (isApprovalLocked) {
     return null;
@@ -527,25 +500,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <span className="brand-mark"><Files size={21} /></span>
             <span>
               DocManager
-              <small>{isSuperAdmin ? "Enterprise Tier" : "Management System"}</small>
+              <small>{isSuperAdmin ? "Administrare platforma" : "Management documente"}</small>
             </span>
           </Link>
           <button className="icon-button sidebar-close" aria-label="Restrange meniul" onClick={closeSidebar}>
             <X size={20} />
           </button>
         </div>
-        <button className="admin-new-document" type="button" onClick={() => router.push(isSuperAdmin ? "/admin#relations" : "/documents")}>
+        <button className="admin-new-document" type="button" onClick={() => router.push(isSuperAdmin ? "/admin/institutii" : "/documents")}>
           <Upload size={20} />
-          {isSuperAdmin ? "New Document" : "Incarca document"}
+          {isSuperAdmin ? "Document nou" : "Incarca document"}
         </button>
         <nav className="side-nav">
           {visibleNav.map((item) => (
             <div className="side-nav-group" key={item.href}>
               {isSuperAdmin ? (
-                <button className={`side-nav-link ${adminSection === item.href.split("#")[1] ? "active" : ""}`} type="button" onClick={() => handleAdminNavigation(item.href)}>
+                <Link className={`side-nav-link ${pathname === item.href ? "active" : ""}`} href={item.href} onClick={() => setIsMenuOpen(false)}>
                   <item.icon size={18} />
                   <span>{item.label}</span>
-                </button>
+                </Link>
               ) : item.children ? (
                 <button className={`side-nav-link ${pathname.startsWith(item.href) ? "active" : ""}`} type="button" aria-expanded={Boolean(expandedNav[item.href])} onClick={() => toggleNavGroup(item.href)}>
                   <item.icon size={18} />
@@ -562,9 +535,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <div className="side-subnav">
                   {item.children.map((child) => (
                     isSuperAdmin ? (
-                      <button className={adminSection === child.href.split("#")[1] ? "active" : ""} type="button" key={child.href} onClick={() => handleAdminNavigation(child.href)}>
+                      <Link className={pathname === child.href ? "active" : ""} href={child.href} key={child.href} onClick={() => setIsMenuOpen(false)}>
                         {child.label}
-                      </button>
+                      </Link>
                     ) : (
                       <Link className={pathname === child.href ? "active" : ""} href={child.href} key={child.href} onClick={() => setIsMenuOpen(false)}>
                         {child.label}
@@ -577,7 +550,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
         <div className="sidebar-footer">
-          {isSuperAdmin && <Link href="/legal/privacy" onClick={() => setIsMenuOpen(false)}><HelpCircle size={18} /> Support</Link>}
+          {isSuperAdmin && <Link href="/legal/privacy" onClick={() => setIsMenuOpen(false)}><HelpCircle size={18} /> Suport</Link>}
           {isSuperAdmin && <Link className="sidebar-logout" href="/" onClick={() => setIsMenuOpen(false)}><LogOut size={18} /> Iesire</Link>}
           {!isSuperAdmin && <Link href="/legal/privacy" onClick={() => setIsMenuOpen(false)}><Settings size={18} /> Setari date</Link>}
           {!isSuperAdmin && <Link className="sidebar-logout" href="/" onClick={() => setIsMenuOpen(false)}><LogOut size={18} /> Iesire</Link>}
@@ -651,11 +624,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {!isSuperAdmin && !isInstitutionAccount && (
             <label className="context-switcher">
               <Building2 size={17} />
-              <select value={activeContextId} onChange={(event) => handleContextChange(event.target.value)}>
-                {contexts.map((context) => (
-                  <option value={context.id} key={context.id}>{context.name}</option>
-                ))}
-              </select>
+                <select value={activeContextId} onChange={(event) => handleContextChange(event.target.value)}>
+                  {contexts.map((context) => (
+                    <option value={context.id} key={context.id} disabled={context.enrollmentStatus === "pending"}>
+                      {context.name}{context.enrollmentStatus === "pending" ? " - in asteptare" : ""}
+                    </option>
+                  ))}
+                </select>
             </label>
           )}
           {isInstitutionAccount && (
@@ -686,7 +661,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                       const Icon = notificationIcon(notification.tone);
 
                       return (
-                        <Link className={`notification-item ${notification.tone} ${notification.read ? "read" : "unread"}`} href={notification.href ?? "/notifications"} key={notification.id} onClick={() => setIsNotificationsOpen(false)}>
+                        <Link className={`notification-item ${notification.tone} ${notification.read ? "read" : "unread"}`} href={notification.href ?? "/notifications"} key={notification.id} onClick={() => {
+                          setNotifications(markNotificationRead(notification.id));
+                          setIsNotificationsOpen(false);
+                        }}>
                           <span><Icon size={17} /></span>
                           <div>
                             <strong>{notification.title}</strong>
@@ -722,12 +700,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               )}
             </div>
             {isSuperAdmin && <button className="icon-button" type="button" aria-label="Setari"><Settings size={20} /></button>}
-            {isSuperAdmin && (
-              <div className="admin-user-summary">
-                <strong>{user.name ?? "Administrator"}</strong>
-                <span>SUPER ADMIN</span>
-              </div>
-            )}
             <div className="profile-menu-wrap">
               <button className="profile-account-trigger" type="button" aria-label="Deschide meniul de profil" aria-expanded={isProfileMenuOpen} onClick={() => {
                 setIsProfileMenuOpen((current) => !current);
@@ -736,7 +708,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               }}>
                 <span className="profile-account-text">
                   <strong>{user.name ?? "Utilizator"}</strong>
-                  <small>{isSuperAdmin ? "Admin" : role === "admin" ? "Admin" : "Cont activ"}</small>
+                  <small>{isSuperAdmin ? "Superadmin" : role === "admin" ? "Administrator" : "Cont activ"}</small>
                 </span>
                 <span className={`profile-avatar ${user.avatarUrl ? "has-image" : ""}`} aria-hidden="true">
                   {user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : <span>{userInitials(user)}</span>}
@@ -744,9 +716,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </button>
               {isProfileMenuOpen && (
                 <div className="profile-menu" role="menu">
+                  {(user.accountType === "individual" || user.accountType === "company") && user.clientCode && (
+                    <span className="profile-menu-client-code">Cod client #{user.clientCode}</span>
+                  )}
                   <Link href={isSuperAdmin ? "/admin" : "/profile"} role="menuitem" onClick={closeProfileMenu}><UserRound size={17} /> Profil</Link>
-                  <Link href="/profile#security" role="menuitem" onClick={closeProfileMenu}><Shield size={17} /> Security</Link>
-                  <Link href="/" role="menuitem" className="danger" onClick={closeProfileMenu}><LogOut size={17} /> Logout</Link>
+                  <Link href="/profile#security" role="menuitem" onClick={closeProfileMenu}><Shield size={17} /> Securitate</Link>
+                  <Link href="/" role="menuitem" className="danger" onClick={closeProfileMenu}><LogOut size={17} /> Iesire</Link>
                 </div>
               )}
             </div>
@@ -755,12 +730,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {children}
         {isSuperAdmin && (
           <nav className="admin-mobile-nav" aria-label="Administrare mobil">
-            <button type="button" onClick={() => handleAdminNavigation("/admin#users")}>
+            <button type="button" onClick={() => router.push("/admin")}>
               <Home size={21} />
-              Home
+              Acasa
             </button>
             {adminMobileNav.map((item) => (
-              <button className={adminSection === item.href.split("#")[1] ? "active" : ""} type="button" key={`${item.href}-${item.label}`} onClick={() => handleAdminNavigation(item.href)}>
+              <button className={pathname === item.href ? "active" : ""} type="button" key={`${item.href}-${item.label}`} onClick={() => router.push(item.href)}>
                 <item.icon size={21} />
                 {item.label}
               </button>

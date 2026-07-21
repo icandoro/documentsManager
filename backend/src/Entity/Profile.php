@@ -51,11 +51,26 @@ class Profile
         return $this;
     }
 
+    public function getId(): ?int
+    {
+        return $this->id;
+    }
+
+    public function getUser(): ?User
+    {
+        return $this->user;
+    }
+
     public function setFirstName(string $firstName): self
     {
         $this->firstName = trim($firstName);
 
         return $this;
+    }
+
+    public function getFirstName(): string
+    {
+        return $this->firstName;
     }
 
     public function setLastName(string $lastName): self
@@ -65,11 +80,36 @@ class Profile
         return $this;
     }
 
+    public function getLastName(): string
+    {
+        return $this->lastName;
+    }
+
+    public function getPhone(): ?string
+    {
+        return $this->phone;
+    }
+
+    public function getLanguage(): string
+    {
+        return $this->language;
+    }
+
+    public function getTimezone(): string
+    {
+        return $this->timezone;
+    }
+
     public function setPersonType(string $personType): self
     {
         $this->personType = $personType;
 
         return $this;
+    }
+
+    public function getPersonType(): string
+    {
+        return $this->personType;
     }
 
     public function setCompanyName(?string $companyName): self
@@ -79,6 +119,11 @@ class Profile
         return $this;
     }
 
+    public function getCompanyName(): ?string
+    {
+        return $this->companyName;
+    }
+
     public function setTaxIdentifier(?string $taxIdentifier): self
     {
         $this->taxIdentifier = $taxIdentifier ? preg_replace('/\D+/', '', $taxIdentifier) : null;
@@ -86,10 +131,23 @@ class Profile
         return $this;
     }
 
+    public function getTaxIdentifier(): ?string
+    {
+        return $this->taxIdentifier;
+    }
+
     public function setOptionalFields(array $optionalFields): self
     {
         $this->optionalFields = $optionalFields;
 
         return $this;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function getOptionalFields(): array
+    {
+        return $this->optionalFields;
     }
 }

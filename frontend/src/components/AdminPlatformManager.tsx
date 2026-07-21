@@ -1,24 +1,66 @@
 "use client";
 
+import Link from "next/link";
 import {
   PlatformInstitution,
   PlatformUser,
-  TaxpayerCompany,
-  TaxpayerPerson,
-  readPlatformInstitutions,
   readPlatformUsers,
-  readTaxpayerCompanies,
-  readTaxpayerPersons,
-  writePlatformInstitutions,
   writePlatformUsers,
-  writeTaxpayerCompanies,
-  writeTaxpayerPersons,
 } from "@/lib/adminData";
-import { Building2, CheckCircle2, Clock3, Database, Download, FileCheck2, FileInput, FileOutput, FileUp, Gavel, Landmark, Link2, MapPin, MoreVertical, Network, RefreshCw, Search, Shield, ShieldAlert, SlidersHorizontal, UserPlus, UserRound, X } from "lucide-react";
+import { apiFetch } from "@/lib/api";
+import {
+  BarChart3,
+  Building2,
+  CheckCircle2,
+  Clock3,
+  Download,
+  Eye,
+  FileCheck2,
+  FileText,
+  Gavel,
+  Landmark,
+  LockKeyhole,
+  MoreVertical,
+  Pencil,
+  Plus,
+  Search,
+  Shield,
+  ShieldAlert,
+  SlidersHorizontal,
+  Trash2,
+  UserCog,
+  UserPlus,
+  X,
+} from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-type AdminTab = "users" | "institutions" | "persons" | "companies" | "relations";
+type AdminTab = "admins" | "all-users" | "roles" | "institutions";
+type AdminSection = "dashboard" | "users" | "all-users" | "security" | "institutions";
+type CapabilityKey =
+  | "platform.full"
+  | "platform.users.read"
+  | "platform.users.write"
+  | "platform.roles.write"
+  | "platform.institutions.read"
+  | "platform.institutions.write"
+  | "platform.institutions.approve"
+  | "platform.audit.read";
+
+type RolePreset = {
+  id: string;
+  label: string;
+  shortLabel: string;
+  description: string;
+  tone: "full" | "edit" | "read" | "review";
+  capabilities: CapabilityKey[];
+};
+
+type AdminAccessRecord = {
+  presetId: string;
+  capabilities: CapabilityKey[];
+  updatedAt: string;
+};
 
 type LocalAccount = {
   email: string;
@@ -26,15 +68,29 @@ type LocalAccount = {
   user: PlatformUser;
 };
 
-type PendingInstitutionOnboarding = {
-  email?: string | null;
-  company?: {
-    name?: string;
-    cif?: string;
-  } | null;
-  documents?: Record<string, string>;
-  status?: string;
-  submittedAt?: string;
+type ApiInstitution = PlatformInstitution & {
+  email: string;
+  documents: Record<string, unknown>;
+};
+
+type DirectoryUser = {
+  id: number;
+  email: string;
+  name: string;
+  phone: string | null;
+  accountType: "individual" | "company" | "institution";
+  status: "activ" | "in_verificare" | "suspendat";
+  locality: string;
+  county: string;
+  cif: string | null;
+  clientCode: string | null;
+  linkedInstitutionIds: string[];
+  linkedInstitutionNames: string[];
+};
+
+type DirectoryInstitutionOption = {
+  slug: string;
+  name: string;
 };
 
 type InstitutionApprovalRequest = {
@@ -43,28 +99,77 @@ type InstitutionApprovalRequest = {
   email: string;
   cif: string;
   submittedAt?: string;
-  documents?: Record<string, string>;
-  user: PlatformUser | null;
+  documents?: Record<string, unknown>;
 };
 
 const localAccountsStorageKey = "docmanager_local_accounts";
+const adminAccessStorageKey = "docmanager_platform_admin_access";
 
-function tabFromHash(hash: string): AdminTab {
-  const value = hash.replace("#", "");
+const capabilityLabels: Record<CapabilityKey, string> = {
+  "platform.full": "Acces complet",
+  "platform.users.read": "Citire administratori",
+  "platform.users.write": "Editare administratori",
+  "platform.roles.write": "Roluri si capabilitati",
+  "platform.institutions.read": "Citire institutii",
+  "platform.institutions.write": "Activare/dezactivare institutii",
+  "platform.institutions.approve": "Aprobare inrolari institutii",
+  "platform.audit.read": "Audit si istoric securitate",
+};
 
-  if (value === "institutions" || value === "persons" || value === "companies" || value === "relations") {
-    return value;
-  }
-
-  return "users";
-}
-
-function statusLabel(status: "legat" | "nelegat" | "activa" | "in_verificare") {
-  if (status === "legat") return "Legat";
-  if (status === "nelegat") return "Nelegat";
-  if (status === "activa") return "Activa";
-  return "In verificare";
-}
+const rolePresets: RolePreset[] = [
+  {
+    id: "superadmin_full",
+    label: "Superadmin full access",
+    shortLabel: "Full access",
+    description: "Poate administra intreaga platforma, roluri, institutii si aprobari.",
+    tone: "full",
+    capabilities: [
+      "platform.full",
+      "platform.users.read",
+      "platform.users.write",
+      "platform.roles.write",
+      "platform.institutions.read",
+      "platform.institutions.write",
+      "platform.institutions.approve",
+      "platform.audit.read",
+    ],
+  },
+  {
+    id: "platform_editor",
+    label: "Administrator editare",
+    shortLabel: "Editare",
+    description: "Poate edita administratori si institutii, fara control total asupra rolurilor critice.",
+    tone: "edit",
+    capabilities: [
+      "platform.users.read",
+      "platform.users.write",
+      "platform.institutions.read",
+      "platform.institutions.write",
+      "platform.institutions.approve",
+      "platform.audit.read",
+    ],
+  },
+  {
+    id: "institution_reviewer",
+    label: "Reviewer institutii",
+    shortLabel: "Aprobari",
+    description: "Verifica documentele de inrolare si aproba sau respinge institutii.",
+    tone: "review",
+    capabilities: [
+      "platform.institutions.read",
+      "platform.institutions.approve",
+      "platform.audit.read",
+    ],
+  },
+  {
+    id: "platform_readonly",
+    label: "Citire si audit",
+    shortLabel: "Citire",
+    description: "Are acces doar la vizualizare si audit, fara modificari.",
+    tone: "read",
+    capabilities: ["platform.users.read", "platform.institutions.read", "platform.audit.read"],
+  },
+];
 
 function readStoredRole() {
   if (typeof window === "undefined") return "user";
@@ -87,19 +192,20 @@ function readLocalAccounts() {
   }
 }
 
-function writeLocalAccounts(accounts: LocalAccount[]) {
-  window.localStorage.setItem(localAccountsStorageKey, JSON.stringify(accounts));
-}
-
-function readPendingInstitutionOnboarding(): PendingInstitutionOnboarding | null {
-  if (typeof window === "undefined") return null;
+function readAdminAccess(): Record<string, AdminAccessRecord> {
+  if (typeof window === "undefined") return {};
 
   try {
-    const saved = window.localStorage.getItem("docmanager_institution_onboarding");
-    return saved ? JSON.parse(saved) as PendingInstitutionOnboarding : null;
+    const saved = window.localStorage.getItem(adminAccessStorageKey);
+    return saved ? JSON.parse(saved) as Record<string, AdminAccessRecord> : {};
   } catch {
-    return null;
+    window.localStorage.removeItem(adminAccessStorageKey);
+    return {};
   }
+}
+
+function writeAdminAccess(access: Record<string, AdminAccessRecord>) {
+  window.localStorage.setItem(adminAccessStorageKey, JSON.stringify(access));
 }
 
 function mergeUsersWithLocalAccounts(users: PlatformUser[]) {
@@ -115,349 +221,385 @@ function nextReviewDate(from = new Date()) {
   return next.toISOString().slice(0, 10);
 }
 
+function statusLabel(status: PlatformInstitution["status"]) {
+  if (status === "activa") return "Activa";
+  if (status === "dezactivata") return "Dezactivata";
+  return "In verificare";
+}
+
+function userStatusLabel(status: PlatformUser["status"]) {
+  if (status === "activ") return "Activ";
+  if (status === "suspendat") return "Suspendat";
+  return "In verificare";
+}
+
+function accessFor(user: PlatformUser, access: Record<string, AdminAccessRecord>) {
+  const fallback = user.role === "superadmin" ? rolePresets[0] : rolePresets[3];
+  const saved = access[user.id];
+  const preset = rolePresets.find((item) => item.id === saved?.presetId) ?? fallback;
+
+  return {
+    preset,
+    capabilities: saved?.capabilities ?? preset.capabilities,
+  };
+}
+
+function isPlatformAdministrator(user: PlatformUser) {
+  return user.role === "admin" || user.role === "superadmin";
+}
+
+function directoryAccountTypeLabel(accountType: DirectoryUser["accountType"]) {
+  if (accountType === "institution") return "Institutie";
+  if (accountType === "company") return "Persoana juridica";
+  return "Persoana fizica";
+}
+
 function isReviewDue(institution: PlatformInstitution) {
   if (!institution.nextDocumentReviewDueAt) return false;
 
   return new Date(institution.nextDocumentReviewDueAt) <= new Date();
 }
 
-export function AdminPlatformManager() {
-  const [role, setRole] = useState("user");
-  const [tab, setTab] = useState<AdminTab>("users");
-  const [query, setQuery] = useState("");
-  const [institutions, setInstitutions] = useState<PlatformInstitution[]>([]);
-  const [users, setUsers] = useState<PlatformUser[]>([]);
-  const [persons, setPersons] = useState<TaxpayerPerson[]>([]);
-  const [companies, setCompanies] = useState<TaxpayerCompany[]>([]);
-  const [selectedUser, setSelectedUser] = useState<PlatformUser | null>(null);
-  const [roleFilter, setRoleFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [pendingOnboarding, setPendingOnboarding] = useState<PendingInstitutionOnboarding | null>(null);
+const adminPageCopy: Record<AdminSection, { eyebrow: string; title: string; description: string }> = {
+  dashboard: {
+    eyebrow: "Superadmin",
+    title: "Dashboard",
+    description: "Privire rapida peste administratori, roluri, institutii si aprobari.",
+  },
+  users: {
+    eyebrow: "Administratori",
+    title: "Administratori platforma",
+    description: "Gestioneaza doar conturile care administreaza platforma.",
+  },
+  "all-users": {
+    eyebrow: "Utilizatori",
+    title: "Toti utilizatorii",
+    description: "Persoane fizice, persoane juridice si institutii inregistrate, indiferent de institutia la care sunt inrolate.",
+  },
+  security: {
+    eyebrow: "Securitate",
+    title: "Roluri si capabilitati",
+    description: "Controleaza accesul, drepturile si nivelurile de administrare.",
+  },
+  institutions: {
+    eyebrow: "Institutii",
+    title: "Institutii si aprobari",
+    description: "Verifica inrolari, activeaza institutii si urmareste revizuirile anuale.",
+  },
+};
 
-  useEffect(() => {
-    function syncRole() {
-      setRole(readStoredRole());
+function tabForSection(section: AdminSection): AdminTab {
+  if (section === "users") return "admins";
+  if (section === "all-users") return "all-users";
+  if (section === "security") return "roles";
+  return "institutions";
+}
+
+export function AdminPlatformManager({ section = "dashboard" }: { section?: AdminSection }) {
+  const [role, setRole] = useState("user");
+  const [query, setQuery] = useState("");
+  const [institutionQuery, setInstitutionQuery] = useState("");
+  const [institutionStatus, setInstitutionStatus] = useState("all");
+  const [adminPresetFilter, setAdminPresetFilter] = useState("all");
+  const [institutions, setInstitutions] = useState<ApiInstitution[]>([]);
+  const [users, setUsers] = useState<PlatformUser[]>([]);
+  const [access, setAccess] = useState<Record<string, AdminAccessRecord>>({});
+  const [selectedAdmin, setSelectedAdmin] = useState<PlatformUser | null>(null);
+  const [isAddAdminOpen, setIsAddAdminOpen] = useState(false);
+  const [directoryUsers, setDirectoryUsers] = useState<DirectoryUser[]>([]);
+  const [directoryInstitutions, setDirectoryInstitutions] = useState<DirectoryInstitutionOption[]>([]);
+  const [directoryCounties, setDirectoryCounties] = useState<string[]>([]);
+  const [directoryLocalities, setDirectoryLocalities] = useState<string[]>([]);
+  const [directoryQuery, setDirectoryQuery] = useState("");
+  const [directoryInstitutionFilter, setDirectoryInstitutionFilter] = useState("all");
+  const [directoryAccountTypeFilter, setDirectoryAccountTypeFilter] = useState("all");
+  const [directoryCountyFilter, setDirectoryCountyFilter] = useState("all");
+  const [directoryLocalityFilter, setDirectoryLocalityFilter] = useState("all");
+  const [directoryPage, setDirectoryPage] = useState(1);
+  const [directoryTotalPages, setDirectoryTotalPages] = useState(1);
+  const [directoryTotal, setDirectoryTotal] = useState(0);
+  const [directoryLoading, setDirectoryLoading] = useState(false);
+  const [directoryDetailUser, setDirectoryDetailUser] = useState<DirectoryUser | null>(null);
+
+  async function loadDirectoryUsers() {
+    setDirectoryLoading(true);
+
+    try {
+      const params = new URLSearchParams({
+        page: String(directoryPage),
+        limit: "20",
+        q: directoryQuery,
+        accountType: directoryAccountTypeFilter,
+        institution: directoryInstitutionFilter,
+        county: directoryCountyFilter,
+        locality: directoryLocalityFilter,
+      });
+      const response = await apiFetch(`/api/platform-admin/all-users?${params.toString()}`);
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data?.message ?? "Eroare la incarcarea utilizatorilor.");
+      }
+
+      setDirectoryUsers(data.users ?? []);
+      setDirectoryInstitutions(data.institutions ?? []);
+      setDirectoryCounties(data.counties ?? []);
+      setDirectoryLocalities(data.localities ?? []);
+      setDirectoryTotalPages(data.totalPages ?? 1);
+      setDirectoryTotal(data.total ?? 0);
+      setDirectoryPage(data.page ?? 1);
+    } catch {
+      toast.error("Nu am putut incarca lista completa de utilizatori.");
+    } finally {
+      setDirectoryLoading(false);
+    }
+  }
+
+  async function deletePlatformUser(id: number, label: string) {
+    if (!window.confirm(`Sigur vrei sa stergi ${label}? Documentele si datele asociate vor fi sterse definitiv.`)) {
+      return;
     }
 
-    syncRole();
-    setInstitutions(readPlatformInstitutions());
-    setUsers(mergeUsersWithLocalAccounts(readPlatformUsers()));
-    setPersons(readTaxpayerPersons());
-    setCompanies(readTaxpayerCompanies());
-    setPendingOnboarding(readPendingInstitutionOnboarding());
-    window.localStorage.setItem("docmanager_user_role", readStoredRole());
-    window.addEventListener("storage", syncRole);
+    try {
+      const response = await apiFetch(`/api/platform-admin/users/${id}`, { method: "DELETE" });
+      const data = await response.json().catch(() => ({}));
 
-    return () => window.removeEventListener("storage", syncRole);
+      if (!response.ok) {
+        throw new Error(data?.message ?? "Stergerea nu a reusit.");
+      }
+
+      toast.success(data.message ?? "Contul a fost sters.");
+      setDirectoryDetailUser(null);
+      await Promise.all([loadDirectoryUsers(), loadInstitutions()]);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Stergerea nu a reusit.");
+    }
+  }
+
+  async function loadInstitutions() {
+    try {
+      const response = await apiFetch("/api/platform-admin/institutions");
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data?.message ?? "Eroare la incarcarea institutiilor.");
+      }
+
+      const rows: Array<{
+        id: number;
+        email: string;
+        name: string;
+        cif: string | null;
+        status: string;
+        approval?: { updatedAt?: string } | null;
+        documents?: Record<string, unknown>;
+      }> = data.institutions ?? [];
+
+      const mapped: ApiInstitution[] = rows.map((row) => ({
+        id: String(row.id),
+        name: row.name,
+        locality: "-",
+        cif: row.cif ?? "-",
+        type: "institutie",
+        status: row.status === "activ" ? "activa" : row.status === "suspendat" ? "dezactivata" : "in_verificare",
+        taxpayers: 0,
+        verificationStatus: row.approval ? "approved" : undefined,
+        lastDocumentReviewAt: row.approval?.updatedAt?.slice(0, 10),
+        email: row.email,
+        documents: row.documents ?? {},
+      }));
+
+      setInstitutions(mapped);
+    } catch {
+      toast.error("Nu am putut incarca institutiile din baza de date.");
+    }
+  }
+
+  useEffect(() => {
+    function sync() {
+      setRole(readStoredRole());
+      setUsers(mergeUsersWithLocalAccounts(readPlatformUsers()));
+      setAccess(readAdminAccess());
+    }
+
+    sync();
+    loadInstitutions();
+    window.addEventListener("storage", sync);
+
+    return () => window.removeEventListener("storage", sync);
   }, []);
 
+  useEffect(() => {
+    loadDirectoryUsers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [directoryAccountTypeFilter, directoryCountyFilter, directoryInstitutionFilter, directoryLocalityFilter, directoryPage, directoryQuery]);
+
+  useEffect(() => {
+    setDirectoryPage(1);
+  }, [directoryAccountTypeFilter, directoryCountyFilter, directoryInstitutionFilter, directoryLocalityFilter, directoryQuery]);
+
   const isSuperAdmin = role === "superadmin";
-  const canManageUsers = role === "superadmin" || role === "admin";
+  const activeTab = tabForSection(section);
+  const pageCopy = adminPageCopy[section];
+
+  const platformAdmins = useMemo(() => users.filter(isPlatformAdministrator), [users]);
+
+  const filteredAdmins = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+
+    return platformAdmins.filter((user) => {
+      const adminAccess = accessFor(user, access);
+      const matchesPreset = adminPresetFilter === "all" || adminAccess.preset.id === adminPresetFilter;
+      const matchesQuery = [user.name, user.email, user.role, user.phone ?? "", adminAccess.preset.label]
+        .some((value) => value.toLowerCase().includes(normalized));
+
+      return matchesPreset && matchesQuery;
+    });
+  }, [access, adminPresetFilter, platformAdmins, query]);
 
   const filteredInstitutions = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
+    const normalized = institutionQuery.trim().toLowerCase();
 
-    return institutions.filter((item) =>
-      [item.name, item.locality, item.cif, item.type].some((value) => value.toLowerCase().includes(normalized)),
-    );
-  }, [institutions, query]);
+    return institutions.filter((institution) => {
+      const matchesStatus = institutionStatus === "all" || institution.status === institutionStatus;
+      const matchesQuery = [institution.name, institution.locality, institution.cif, institution.type]
+        .some((value) => value.toLowerCase().includes(normalized));
 
-  const filteredUsers = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-
-    return users.filter((item) => {
-      const linkedInstitutions = item.linkedInstitutionIds
-        .map((id) => institutions.find((institution) => institution.id === id)?.name ?? id)
-        .join(" ");
-      const matchesRole = roleFilter === "all" || item.role === roleFilter;
-      const matchesStatus = statusFilter === "all" || item.status === statusFilter;
-
-      return matchesRole && matchesStatus && [
-        item.name,
-        item.email,
-        item.role,
-        item.accountType,
-        item.cnp ?? "",
-        item.cif ?? "",
-        item.phone ?? "",
-        item.status,
-        linkedInstitutions,
-      ].some((value) => value.toLowerCase().includes(normalized));
+      return matchesStatus && matchesQuery;
     });
-  }, [institutions, query, roleFilter, statusFilter, users]);
+  }, [institutionQuery, institutionStatus, institutions]);
 
-  const filteredPersons = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-
-    return persons.filter((item) =>
-      [item.name, item.cnp, item.locality, item.status].some((value) => value.toLowerCase().includes(normalized)),
-    );
-  }, [persons, query]);
-
-  const filteredCompanies = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-
-    return companies.filter((item) =>
-      [item.name, item.cif, item.locality, item.status].some((value) => value.toLowerCase().includes(normalized)),
-    );
-  }, [companies, query]);
-
-  const pendingInstitutionUsers = useMemo(() => {
-    return users.filter((user) => user.accountType === "institution" && user.status === "in_verificare");
-  }, [users]);
+  const pendingInstitutionRequests = useMemo<InstitutionApprovalRequest[]>(() => {
+    return institutions
+      .filter((institution) => institution.status === "in_verificare")
+      .map((institution) => ({
+        id: institution.id,
+        name: institution.name,
+        email: institution.email,
+        cif: institution.cif,
+        documents: institution.documents,
+      }));
+  }, [institutions]);
 
   const dueInstitutions = useMemo(() => {
     return institutions.filter((institution) => isReviewDue(institution) || institution.verificationStatus === "renewal_due");
   }, [institutions]);
 
-  const pendingInstitutionRequests = useMemo(() => {
-    const requests: InstitutionApprovalRequest[] = pendingInstitutionUsers.map((user) => ({
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      cif: user.cif ?? "-",
-      submittedAt: pendingOnboarding?.email === user.email ? pendingOnboarding.submittedAt : undefined,
-      documents: pendingOnboarding?.email === user.email ? pendingOnboarding.documents : undefined,
-      user,
-    }));
+  function persistUsers(nextUsers: PlatformUser[]) {
+    setUsers(nextUsers);
+    writePlatformUsers(nextUsers);
+  }
 
-    if (pendingOnboarding?.status === "pending_admin_review" && pendingOnboarding.email && !requests.some((request) => request.email === pendingOnboarding.email)) {
-      requests.unshift({
-        id: `pending-${pendingOnboarding.email}`,
-        name: pendingOnboarding.company?.name ?? "Institutie in verificare",
-        email: pendingOnboarding.email,
-        cif: pendingOnboarding.company?.cif ?? "-",
-        submittedAt: pendingOnboarding.submittedAt,
-        documents: pendingOnboarding.documents,
-        user: null,
-      });
-    }
-
-    return requests;
-  }, [pendingInstitutionUsers, pendingOnboarding]);
-
-  function handleInstitutionSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const name = String(form.get("name") ?? "").trim();
-    const locality = String(form.get("locality") ?? "").trim();
-    const cif = String(form.get("cif") ?? "").trim();
-    const type = String(form.get("type") ?? "primarie") as PlatformInstitution["type"];
-
-    if (!name || !locality || !cif) return;
-
-    const nextInstitutions = [
-      {
-        id: `${Date.now()}`,
-        name,
-        locality,
-        cif,
-        type,
-        status: "activa" as const,
-        taxpayers: 0,
+  function updateAdminPreset(userId: string, presetId: string) {
+    const preset = rolePresets.find((item) => item.id === presetId) ?? rolePresets[3];
+    const nextAccess = {
+      ...access,
+      [userId]: {
+        presetId: preset.id,
+        capabilities: preset.capabilities,
+        updatedAt: new Date().toISOString(),
       },
-      ...institutions,
-    ];
-
-    setInstitutions(nextInstitutions);
-    writePlatformInstitutions(nextInstitutions);
-    event.currentTarget.reset();
-  }
-
-  function handleDatabaseImport(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const institutionId = String(form.get("institutionId") ?? "");
-    const payload = String(form.get("payload") ?? "").trim();
-    const institution = institutions.find((item) => item.id === institutionId);
-
-    if (!institution || !payload) return;
-
-    const rows = payload.split("\n").map((row) => row.split(",").map((cell) => cell.trim())).filter((row) => row.length >= 3);
-    const nextPersons = [...persons];
-    const nextCompanies = [...companies];
-
-    rows.forEach(([kind, identifier, name]) => {
-      if (kind.toLowerCase() === "pf") {
-        nextPersons.unshift({
-          id: `${Date.now()}-${identifier}`,
-          name,
-          cnp: identifier,
-          locality: institution.locality,
-          institutionId,
-          status: "nelegat",
-        });
-      }
-
-      if (kind.toLowerCase() === "pj") {
-        nextCompanies.unshift({
-          id: `${Date.now()}-${identifier}`,
-          name,
-          cif: identifier,
-          locality: institution.locality,
-          institutionId,
-          status: "nelegat",
-        });
-      }
-    });
-
-    const nextInstitutions = institutions.map((item) =>
-      item.id === institutionId ? { ...item, taxpayers: item.taxpayers + rows.length } : item,
+    };
+    const nextUsers = users.map((user) => user.id === userId
+      ? { ...user, role: preset.id === "superadmin_full" ? "superadmin" as const : "admin" as const }
+      : user,
     );
 
-    setPersons(nextPersons);
-    setCompanies(nextCompanies);
-    setInstitutions(nextInstitutions);
-    writeTaxpayerPersons(nextPersons);
-    writeTaxpayerCompanies(nextCompanies);
-    writePlatformInstitutions(nextInstitutions);
-    event.currentTarget.reset();
+    setAccess(nextAccess);
+    writeAdminAccess(nextAccess);
+    persistUsers(nextUsers);
+    setSelectedAdmin((current) => current?.id === userId ? nextUsers.find((user) => user.id === userId) ?? null : current);
+    toast.success("Rolul administratorului a fost actualizat.");
   }
 
-  function handleManualTaxpayerSubmit(event: FormEvent<HTMLFormElement>) {
+  function updateAdminStatus(userId: string, status: PlatformUser["status"]) {
+    const nextUsers = users.map((user) => user.id === userId ? { ...user, status } : user);
+
+    persistUsers(nextUsers);
+    setSelectedAdmin((current) => current?.id === userId ? { ...current, status } : current);
+    toast.success("Statusul administratorului a fost actualizat.");
+  }
+
+  function handleCreateAdmin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const kind = String(form.get("kind") ?? "pf");
-    const institutionId = String(form.get("institutionId") ?? "");
-    const identifier = String(form.get("identifier") ?? "").trim();
     const name = String(form.get("name") ?? "").trim();
-    const city = String(form.get("city") ?? "").trim();
-    const sector = String(form.get("sector") ?? "").trim();
-    const address = String(form.get("address") ?? "").trim();
+    const email = String(form.get("email") ?? "").trim().toLowerCase();
+    const presetId = String(form.get("presetId") ?? "platform_readonly");
+    const preset = rolePresets.find((item) => item.id === presetId) ?? rolePresets[3];
 
-    if (!institutionId || !identifier || !name || !city) return;
-
-    if (kind === "pf") {
-      const nextPersons = [{
-        id: `${Date.now()}-${identifier}`,
-        name,
-        cnp: identifier,
-        locality: sector ? `${city}, sector ${sector}` : city,
-        institutionId,
-        status: "nelegat" as const,
-      }, ...persons];
-
-      setPersons(nextPersons);
-      writeTaxpayerPersons(nextPersons);
-    } else {
-      const nextCompanies = [{
-        id: `${Date.now()}-${identifier}`,
-        name,
-        cif: identifier,
-        locality: address ? `${city}, ${address}` : city,
-        institutionId,
-        status: "nelegat" as const,
-      }, ...companies];
-
-      setCompanies(nextCompanies);
-      writeTaxpayerCompanies(nextCompanies);
+    if (!name || !email) return;
+    if (users.some((user) => user.email.toLowerCase() === email)) {
+      toast.error("Exista deja un cont cu acest email.");
+      return;
     }
 
-    event.currentTarget.reset();
+    const nextAdmin: PlatformUser = {
+      id: `platform-admin-${Date.now()}`,
+      name,
+      email,
+      role: preset.id === "superadmin_full" ? "superadmin" : "admin",
+      accountType: "individual",
+      status: "activ",
+      linkedInstitutionIds: [],
+      sentCount: 0,
+      receivedCount: 0,
+    };
+    const nextUsers = [nextAdmin, ...users];
+    const nextAccess = {
+      ...access,
+      [nextAdmin.id]: {
+        presetId: preset.id,
+        capabilities: preset.capabilities,
+        updatedAt: new Date().toISOString(),
+      },
+    };
+
+    persistUsers(nextUsers);
+    setAccess(nextAccess);
+    writeAdminAccess(nextAccess);
+    setIsAddAdminOpen(false);
+    toast.success("Administratorul platformei a fost creat.");
   }
 
-  function linkPerson(id: string) {
-    const nextPersons = persons.map((person) => person.id === id ? { ...person, status: "legat" as const } : person);
+  async function updateInstitutionStatus(institutionId: string, status: "activ" | "in_verificare" | "suspendat") {
+    const response = await apiFetch(`/api/platform-admin/institutions/${institutionId}/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    const data = await response.json().catch(() => ({}));
 
-    setPersons(nextPersons);
-    writeTaxpayerPersons(nextPersons);
-  }
-
-  function linkCompany(id: string) {
-    const nextCompanies = companies.map((company) => company.id === id ? { ...company, status: "legat" as const } : company);
-
-    setCompanies(nextCompanies);
-    writeTaxpayerCompanies(nextCompanies);
-  }
-
-  function updateUserRole(id: string, nextRole: PlatformUser["role"]) {
-    const nextUsers = users.map((user) => user.id === id ? { ...user, role: nextRole } : user);
-
-    setUsers(nextUsers);
-    setSelectedUser((current) => current?.id === id ? { ...current, role: nextRole } : current);
-    writePlatformUsers(nextUsers);
-  }
-
-  useEffect(() => {
-    function syncTabFromHash() {
-      const nextTab = tabFromHash(window.location.hash);
-
-      if (!isSuperAdmin && nextTab !== "users") {
-        window.history.replaceState(null, "", "#users");
-        setTab("users");
-        return;
-      }
-
-      setTab(nextTab);
+    if (!response.ok) {
+      toast.error(data?.message ?? "Nu am putut actualiza statusul institutiei.");
+      return false;
     }
 
-    syncTabFromHash();
-    window.addEventListener("hashchange", syncTabFromHash);
-
-    return () => window.removeEventListener("hashchange", syncTabFromHash);
-  }, [isSuperAdmin]);
-
-  function updateUserStatus(id: string, nextStatus: PlatformUser["status"]) {
-    const nextUsers = users.map((user) => user.id === id ? { ...user, status: nextStatus } : user);
-
-    setUsers(nextUsers);
-    setSelectedUser((current) => current?.id === id ? { ...current, status: nextStatus } : current);
-    writePlatformUsers(nextUsers);
+    await loadInstitutions();
+    return true;
   }
 
-  function persistUserStatusByEmail(email: string, nextStatus: PlatformUser["status"]) {
-    const normalizedEmail = email.toLowerCase();
-    const nextUsers = users.map((user) => user.email.toLowerCase() === normalizedEmail ? { ...user, status: nextStatus } : user);
-    const nextLocalAccounts = readLocalAccounts().map((account) =>
-      account.email.toLowerCase() === normalizedEmail ? { ...account, user: { ...account.user, status: nextStatus } } : account,
-    );
-
-    setUsers(nextUsers);
-    writePlatformUsers(nextUsers.filter((user) => readPlatformUsers().some((defaultUser) => defaultUser.id === user.id)));
-    writeLocalAccounts(nextLocalAccounts);
-  }
-
-  function approveInstitutionRequest(email: string, name: string, cif: string) {
-    persistUserStatusByEmail(email, "activ");
-
-    const existingInstitution = institutions.find((institution) => institution.cif.replace(/^RO/i, "") === cif.replace(/^RO/i, ""));
-    const now = new Date();
-    const nextInstitutions = existingInstitution
-      ? institutions.map((institution) => institution.id === existingInstitution.id ? {
-        ...institution,
-        status: "activa" as const,
-        verificationStatus: "approved" as const,
-        lastDocumentReviewAt: now.toISOString().slice(0, 10),
-        nextDocumentReviewDueAt: nextReviewDate(now),
-      } : institution)
-      : [{
-        id: `institution-${Date.now()}`,
-        name,
-        locality: "Nespecificata",
-        cif,
-        type: "institutie" as const,
-        status: "activa" as const,
-        taxpayers: 0,
-        verificationStatus: "approved" as const,
-        lastDocumentReviewAt: now.toISOString().slice(0, 10),
-        nextDocumentReviewDueAt: nextReviewDate(now),
-      }, ...institutions];
-
-    setInstitutions(nextInstitutions);
-    writePlatformInstitutions(nextInstitutions);
-
-    if (pendingOnboarding?.email === email) {
-      const nextOnboarding = { ...pendingOnboarding, status: "approved" };
-      window.localStorage.setItem("docmanager_institution_onboarding", JSON.stringify(nextOnboarding));
-      setPendingOnboarding(nextOnboarding);
+  async function approveInstitutionRequest(institutionId: string) {
+    if (await updateInstitutionStatus(institutionId, "activ")) {
+      toast.success("Institutia a fost aprobata si contul este activ.");
     }
-
-    toast.success("Institutia a fost aprobata. Contul este activ.");
   }
 
-  function rejectInstitutionRequest(email: string) {
-    persistUserStatusByEmail(email, "suspendat");
-    toast.info("Solicitarea institutiei a fost marcata ca respinsa/suspendata.");
+  async function rejectInstitutionRequest(institutionId: string) {
+    if (await updateInstitutionStatus(institutionId, "suspendat")) {
+      toast.info("Solicitarea institutiei a fost respinsa si contul a fost suspendat.");
+    }
+  }
+
+  async function toggleInstitutionStatus(institutionId: string) {
+    const current = institutions.find((institution) => institution.id === institutionId);
+    if (!current) return;
+
+    const nextStatus = current.status === "activa" ? "suspendat" : "activ";
+
+    if (await updateInstitutionStatus(institutionId, nextStatus)) {
+      toast.success(nextStatus === "activ" ? "Institutia a fost activata." : "Institutia a fost dezactivata.");
+    }
   }
 
   function confirmAnnualReview(institutionId: string) {
@@ -470,398 +612,487 @@ export function AdminPlatformManager() {
     } : institution);
 
     setInstitutions(nextInstitutions);
-    writePlatformInstitutions(nextInstitutions);
     toast.success("Revizuirea anuala a fost confirmata pentru urmatoarele 12 luni.");
   }
 
-  if (!canManageUsers) {
+  if (!isSuperAdmin) {
     return (
       <section className="approval-panel">
         <ShieldAlert size={36} />
         <h1>Acces restrictionat</h1>
-        <p>Zona de administrare este disponibila doar pentru rolurile admin si superadmin.</p>
+        <p>Administrarea platformei este disponibila doar pentru conturile superadmin.</p>
       </section>
     );
   }
 
   return (
     <>
-      <section className="enterprise-page-head">
+      <section className="enterprise-page-head superadmin-head">
         <div>
-          <p className="eyebrow">{isSuperAdmin ? "Superadmin" : "Admin"}</p>
-          <h1>{tab === "users" ? "User Management" : tab === "institutions" ? "Institutions" : tab === "persons" ? "Individuals" : tab === "companies" ? "Legal Entities" : "Imports"}</h1>
-          <p>{tab === "users" ? "Manage institutional access, roles, and user profiles across the enterprise." : "Gestioneaza institutiile, contribuabilii si legaturile CNP/CIF intr-un mediu securizat."}</p>
+          <p className="eyebrow">{pageCopy.eyebrow}</p>
+          <h1>{pageCopy.title}</h1>
+          <p>{pageCopy.description}</p>
         </div>
-        {tab === "users" && (
-          <button className="primary-button admin-add-user" type="button">
-            <UserPlus size={20} />
-            Add New User
-          </button>
-        )}
       </section>
 
-      {tab === "users" ? (
-        <>
-          <section className="admin-overview-stats">
-            <article>
-              <div className="admin-stat-icon"><UserRound size={24} /></div>
-              <em>+12%</em>
-              <span>Total Users</span>
-              <strong>{users.length.toLocaleString("ro-RO")}</strong>
-              <p>+12%</p>
-            </article>
-            <article>
-              <div className="admin-stat-icon warm"><Building2 size={24} /></div>
-              <span>Active Now</span>
-              <strong>{users.filter((item) => item.status === "activ").length.toLocaleString("ro-RO")}</strong>
-              <p>High Load</p>
-            </article>
-            <article>
-              <div className="admin-stat-icon cool"><Gavel size={24} /></div>
-              <span>Pending Requests</span>
-              <strong>{(users.filter((item) => item.status === "in_verificare").length + (pendingOnboarding?.status === "pending_admin_review" ? 1 : 0)).toLocaleString("ro-RO")}</strong>
-              <p>Action Needed</p>
-            </article>
-            <article>
-              <div className="admin-stat-icon"><Network size={24} /></div>
-              <i />
-              <span>Admin Accounts</span>
-              <strong>{users.filter((item) => item.role === "admin" || item.role === "superadmin").length}</strong>
-              <p>Stable</p>
-            </article>
-          </section>
-        </>
-      ) : (
-        <>
-          <section className="admin-tabs panel admin-search-only">
+      <section className="admin-overview-stats superadmin-stats">
+        <article>
+          <div className="admin-stat-icon"><UserCog size={22} /></div>
+          <span>Administratori</span>
+          <strong>{platformAdmins.length}</strong>
+          <p>Doar administratori platforma</p>
+        </article>
+        <article>
+          <div className="admin-stat-icon cool"><Shield size={22} /></div>
+          <span>Roluri definite</span>
+          <strong>{rolePresets.length}</strong>
+          <p>Full access, editare, citire</p>
+        </article>
+        <article>
+          <div className="admin-stat-icon warm"><Landmark size={22} /></div>
+          <span>Institutii</span>
+          <strong>{institutions.length}</strong>
+          <p>{institutions.filter((item) => item.status === "activa").length} active</p>
+        </article>
+        <article>
+          <div className="admin-stat-icon alert"><Gavel size={22} /></div>
+          <span>Aprobari</span>
+          <strong>{pendingInstitutionRequests.length + dueInstitutions.length}</strong>
+          <p>Inrolari si revizuiri 12 luni</p>
+        </article>
+      </section>
+
+      {section === "dashboard" && (
+        <section className="superadmin-dashboard-grid">
+          <Link className="panel superadmin-dashboard-card" href="/admin/utilizatori">
+            <span className="admin-stat-icon"><UserCog size={22} /></span>
             <div>
-              <p className="eyebrow">Sectiune curenta</p>
-              <h2>{tab === "institutions" ? "Institutii" : tab === "persons" ? "Persoane fizice" : tab === "companies" ? "Persoane juridice" : "Import si legaturi"}</h2>
+              <p className="eyebrow">Utilizatori</p>
+              <h2>Administratori platforma</h2>
+              <span>{platformAdmins.length} conturi cu acces administrativ.</span>
             </div>
-            <label className="compact-select search-filter">Cautare
-              <span><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cauta dupa nume, CNP, CIF sau localitate" /></span>
-            </label>
-          </section>
-        </>
+          </Link>
+          <Link className="panel superadmin-dashboard-card" href="/admin/securitate">
+            <span className="admin-stat-icon cool"><LockKeyhole size={22} /></span>
+            <div>
+              <p className="eyebrow">Securitate</p>
+              <h2>Roluri si capabilitati</h2>
+              <span>{rolePresets.length} roluri predefinite pentru acces platforma.</span>
+            </div>
+          </Link>
+          <Link className="panel superadmin-dashboard-card" href="/admin/institutii">
+            <span className="admin-stat-icon warm"><Landmark size={22} /></span>
+            <div>
+              <p className="eyebrow">Institutii</p>
+              <h2>Aprobari si activare</h2>
+              <span>{pendingInstitutionRequests.length} solicitari in asteptare, {dueInstitutions.length} revizuiri.</span>
+            </div>
+          </Link>
+          <article className="panel superadmin-dashboard-card">
+            <span className="admin-stat-icon alert"><BarChart3 size={22} /></span>
+            <div>
+              <p className="eyebrow">Audit</p>
+              <h2>Activitate platforma</h2>
+              <span>Ultimele modificari de roluri si institutii raman urmaribile in zona de securitate.</span>
+            </div>
+          </article>
+        </section>
       )}
 
-      {tab === "users" && (
-        <>
-        <section className="admin-overview-table panel">
-          <div className="admin-table-toolbar">
-            <label className="admin-table-search">
-              <Search size={18} />
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter by name, email..." />
-            </label>
-            <select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>
-              <option value="all">All Roles</option>
-              <option value="superadmin">Superadmin</option>
-              <option value="admin">Admin</option>
-              <option value="user">User</option>
-            </select>
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-              <option value="all">All Status</option>
-              <option value="activ">Active</option>
-              <option value="in_verificare">Pending</option>
-              <option value="suspendat">Inactive</option>
-            </select>
-            <button className="icon-button" type="button" aria-label="Filtre avansate"><SlidersHorizontal size={19} /></button>
-            <button className="icon-button" type="button" aria-label="Export"><Download size={19} /></button>
-          </div>
-          <div className="admin-overview-head">
-            <span>User details</span>
-            <span>CNP / Identifier</span>
-            <span>Institution</span>
-            <span>Role</span>
-            <span>Status</span>
-            <span>Actions</span>
-          </div>
-          {filteredUsers.slice(0, 4).map((user, index) => {
-            const linkedInstitutions = user.linkedInstitutionIds
-              .map((id) => institutions.find((institution) => institution.id === id)?.name ?? id);
+      {section !== "dashboard" && activeTab === "admins" && (
+        <section className="panel superadmin-panel">
+          <header className="admin-section-head">
+            <div>
+              <p className="eyebrow">Securitate platforma</p>
+              <h2>Administratori platforma</h2>
+              <span>Sunt listate doar conturile care administreaza platforma, nu utilizatorii institutiilor.</span>
+            </div>
+            <button className="primary-button admin-action-button" type="button" onClick={() => setIsAddAdminOpen(true)}>
+              <UserPlus size={18} />
+              Adauga administrator
+            </button>
+          </header>
 
-            return (
-              <article className="admin-overview-row enterprise-user-row" key={user.id} onClick={() => setSelectedUser(user)}>
-                <span className={`admin-avatar-chip tone-${index}`}>{user.name.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</span>
-                <div className="admin-user-main">
+          <div className="admin-table-toolbar superadmin-toolbar">
+            <label className="admin-table-search clean-search">
+              <Search size={18} />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cauta administrator, email sau rol" />
+            </label>
+            <select value={adminPresetFilter} onChange={(event) => setAdminPresetFilter(event.target.value)}>
+              <option value="all">Toate rolurile</option>
+              {rolePresets.map((preset) => (
+                <option value={preset.id} key={preset.id}>{preset.shortLabel}</option>
+              ))}
+            </select>
+            <button className="icon-button" type="button" aria-label="Filtre"><SlidersHorizontal size={18} /></button>
+            <button className="icon-button" type="button" aria-label="Export"><Download size={18} /></button>
+          </div>
+
+          <div className="admin-security-list">
+            {filteredAdmins.map((admin) => {
+              const adminAccess = accessFor(admin, access);
+
+              return (
+                <article className="admin-security-row" key={admin.id}>
+                  <span className={`admin-avatar-chip ${admin.role === "superadmin" ? "super" : ""}`}>
+                    {admin.name.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase()}
+                  </span>
+                  <div className="admin-identity">
+                    <strong>{admin.name}</strong>
+                    <span>{admin.email}</span>
+                    <small>{admin.phone ?? "Telefon nesetat"}</small>
+                  </div>
+                  <span className={`admin-role-badge tone-${adminAccess.preset.tone}`}>{adminAccess.preset.shortLabel}</span>
+                  <span className={`admin-status-pill ${admin.status === "activ" ? "active" : "inactive"}`}>{userStatusLabel(admin.status)}</span>
+                  <div className="capability-preview">
+                    {adminAccess.capabilities.slice(0, 3).map((capability) => (
+                      <em key={capability}>{capabilityLabels[capability]}</em>
+                    ))}
+                    {adminAccess.capabilities.length > 3 && <em>+{adminAccess.capabilities.length - 3}</em>}
+                  </div>
+                  <button className="secondary-button" type="button" onClick={() => setSelectedAdmin(admin)}>
+                    <MoreVertical size={18} />
+                    Detalii
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {section !== "dashboard" && activeTab === "all-users" && (
+        <section className="panel superadmin-panel">
+          <header className="admin-section-head">
+            <div>
+              <p className="eyebrow">Toata platforma</p>
+              <h2>Toti utilizatorii</h2>
+              <span>{directoryTotal} conturi &middot; persoane fizice, persoane juridice si institutii, indiferent de institutia la care sunt inrolate.</span>
+            </div>
+          </header>
+
+          <div className="directory-filter-bar">
+            <label className="admin-table-search clean-search directory-filter-search">
+              <Search size={18} />
+              <input value={directoryQuery} onChange={(event) => setDirectoryQuery(event.target.value)} placeholder="Cauta utilizator, email, cod client sau institutie" />
+            </label>
+            <label className="directory-filter-field">
+              <span>Institutie</span>
+              <select value={directoryInstitutionFilter} onChange={(event) => setDirectoryInstitutionFilter(event.target.value)}>
+                <option value="all">Toate conturile</option>
+                <option value="independent">Independent</option>
+                {directoryInstitutions.map((institution) => (
+                  <option value={institution.slug} key={institution.slug}>{institution.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="directory-filter-field">
+              <span>Tip cont</span>
+              <select value={directoryAccountTypeFilter} onChange={(event) => setDirectoryAccountTypeFilter(event.target.value)}>
+                <option value="all">Toate tipurile</option>
+                <option value="individual">Persoana fizica</option>
+                <option value="company">Persoana juridica</option>
+                <option value="institution">Institutie</option>
+              </select>
+            </label>
+            <label className="directory-filter-field">
+              <span>Judet</span>
+              <select value={directoryCountyFilter} onChange={(event) => setDirectoryCountyFilter(event.target.value)}>
+                <option value="all">Toate judetele</option>
+                {directoryCounties.map((county) => <option value={county} key={county}>{county}</option>)}
+              </select>
+            </label>
+            <label className="directory-filter-field">
+              <span>Localitate</span>
+              <select value={directoryLocalityFilter} onChange={(event) => setDirectoryLocalityFilter(event.target.value)}>
+                <option value="all">Toate localitatile</option>
+                {directoryLocalities.map((locality) => <option value={locality} key={locality}>{locality}</option>)}
+              </select>
+            </label>
+          </div>
+
+          <div className="admin-security-list">
+            {directoryLoading && <p className="empty-state">Se incarca...</p>}
+            {!directoryLoading && directoryUsers.map((user) => (
+              <article className="admin-security-row" key={user.id}>
+                <span className={`admin-avatar-chip ${user.accountType === "institution" ? "institution" : ""}`}>
+                  {user.name.split(" ").filter(Boolean).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}
+                </span>
+                <div className="admin-identity">
                   <strong>{user.name}</strong>
                   <span>{user.email}</span>
+                  <small>{user.linkedInstitutionNames.length > 0 ? user.linkedInstitutionNames.join(", ") : "Independent"}</small>
+                  {(user.locality || user.county) && (
+                    <small>{[user.locality, user.county].filter(Boolean).join(", ")}</small>
+                  )}
                 </div>
-                <div>
-                  <span>{user.accountType === "individual" ? "Persoana fizica" : user.accountType === "company" ? "Persoana juridica" : "Institutie"}</span>
-                  <small>{user.cnp ?? user.cif ?? "Fara identificator"}</small>
-                </div>
-                <span className="institution-tags-inline">
-                  {linkedInstitutions.slice(0, 2).map((institution) => <em key={institution}>{institution}</em>)}
-                  {linkedInstitutions.length === 0 && <em>Independent</em>}
-                </span>
-                <span className="admin-role-badge">{user.role === "superadmin" ? "Superadmin" : user.role === "admin" ? "Administrator" : "Viewer"}</span>
-                <span className={`admin-status-pill ${user.status === "activ" ? "active" : "inactive"}`}>
-                  {user.status === "activ" ? "Active" : user.status === "in_verificare" ? "Pending" : "Inactive"}
-                </span>
-                <button type="button" aria-label={`Detalii ${user.name}`} onClick={(event) => { event.stopPropagation(); setSelectedUser(user); }}><MoreVertical size={20} /></button>
+                <span className="admin-role-badge tone-read">{directoryAccountTypeLabel(user.accountType)}</span>
+                <span className={`admin-status-pill ${user.status === "activ" ? "active" : "inactive"}`}>{userStatusLabel(user.status)}</span>
+                <button className="secondary-button" type="button" onClick={() => setDirectoryDetailUser(user)}>
+                  <MoreVertical size={18} />
+                  Detalii
+                </button>
               </article>
-            );
-          })}
-          <footer className="admin-overview-footer">
-            <span>Showing 1-{Math.min(filteredUsers.length, 4)} of {users.length.toLocaleString("ro-RO")} users</span>
-            <div>
-              <button type="button">‹</button>
-              <button className="active" type="button">1</button>
-              <button type="button">2</button>
-              <button type="button">3</button>
-              <span>...</span>
-              <button type="button">321</button>
-              <button type="button">›</button>
-            </div>
-          </footer>
-        </section>
-
-        <section className="admin-insight-grid">
-          <article className="admin-insight-card">
-            <h2>Regula de acces institutional</h2>
-            <p>O institutie poate trimite documente doar catre persoane sau firme importate in baza ei si legate de cont prin CNP/CIF. Daca persoana are cont, dar nu exista in baza institutiei, relatia nu este activa.</p>
-            <button className="secondary-button" type="button" onClick={() => window.location.hash = "relations"}>Gestioneaza legaturi</button>
-          </article>
-          <article className="admin-security-card">
-            <Shield size={38} />
-            <h2>Flux securizat activ</h2>
-            <p>Documentele se trimit doar intre conturi eligibile: persoana fizica, persoana juridica si institutie validata.</p>
-          </article>
-        </section>
-        </>
-      )}
-      {selectedUser && (
-        <section className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Profil ${selectedUser.name}`}>
-          <div className="modal-panel admin-profile-modal">
-            <header className="modal-head">
-              <div>
-                <p className="eyebrow">Profil utilizator</p>
-                <h2>{selectedUser.name}</h2>
-                <p>{selectedUser.email} · {selectedUser.accountType === "individual" ? "Persoana fizica" : selectedUser.accountType === "company" ? "Persoana juridica" : "Institutie"}</p>
-              </div>
-              <button className="icon-button" type="button" aria-label="Inchide profilul" onClick={() => setSelectedUser(null)}><X size={18} /></button>
-            </header>
-            <div className="profile-modal-stats">
-              <span><FileOutput size={17} /><strong>{selectedUser.sentCount}</strong> documente trimise</span>
-              <span><FileInput size={17} /><strong>{selectedUser.receivedCount}</strong> documente primite</span>
-              <span className={`status-chip ${selectedUser.status === "activ" ? "received" : selectedUser.status === "in_verificare" ? "waiting" : "neutral"}`}>{selectedUser.status}</span>
-            </div>
-            <div className="profile-detail-grid">
-              <section>
-                <h3>Date personale</h3>
-                <dl>
-                  <div><dt>Nume</dt><dd>{selectedUser.lastName ?? selectedUser.name}</dd></div>
-                  <div><dt>Prenume</dt><dd>{selectedUser.firstName ?? "-"}</dd></div>
-                  <div><dt>CNP</dt><dd>{selectedUser.cnp ?? "-"}</dd></div>
-                  <div><dt>CIF/CUI</dt><dd>{selectedUser.cif ?? "-"}</dd></div>
-                  <div><dt>Telefon</dt><dd>{selectedUser.phone ?? "-"}</dd></div>
-                  <div><dt>Email</dt><dd>{selectedUser.email}</dd></div>
-                </dl>
-              </section>
-              <section>
-                <h3>Adresa completa</h3>
-                <dl>
-                  <div><dt>Strada</dt><dd>{selectedUser.address?.street ?? "-"}</dd></div>
-                  <div><dt>Numar</dt><dd>{selectedUser.address?.number ?? "-"}</dd></div>
-                  <div><dt>Localitate</dt><dd>{selectedUser.address?.city ?? "-"}</dd></div>
-                  <div><dt>Sector</dt><dd>{selectedUser.address?.sector ?? "-"}</dd></div>
-                  <div><dt>Judet</dt><dd>{selectedUser.address?.county ?? "-"}</dd></div>
-                  <div><dt>Cod postal</dt><dd>{selectedUser.address?.postalCode ?? "-"}</dd></div>
-                </dl>
-              </section>
-              <section>
-                <h3>Institutii inrolate</h3>
-                <div className="linked-institutions profile">
-                  {selectedUser.linkedInstitutionIds.map((id) => (
-                    <em key={id}>{institutions.find((institution) => institution.id === id)?.name ?? id}</em>
-                  ))}
-                  {selectedUser.linkedInstitutionIds.length === 0 && <em>Independent</em>}
-                </div>
-              </section>
-              <section>
-                <h3>Administrare cont</h3>
-                <div className="profile-admin-controls">
-                  <label className="compact-select">Rol
-                    <select value={selectedUser.role} onChange={(event) => updateUserRole(selectedUser.id, event.target.value as PlatformUser["role"])} disabled={!isSuperAdmin}>
-                      <option value="user">User</option>
-                      <option value="admin">Admin</option>
-                      <option value="superadmin">Superadmin</option>
-                    </select>
-                  </label>
-                  <label className="compact-select">Status
-                    <select value={selectedUser.status} onChange={(event) => updateUserStatus(selectedUser.id, event.target.value as PlatformUser["status"])}>
-                      <option value="activ">Activ</option>
-                      <option value="in_verificare">In verificare</option>
-                      <option value="suspendat">Suspendat</option>
-                    </select>
-                  </label>
-                  <button className="secondary-button danger-action" type="button" onClick={() => updateUserStatus(selectedUser.id, "suspendat")}>
-                    Dezactiveaza utilizator
-                  </button>
-                </div>
-              </section>
-            </div>
-            <aside className="relation-note mapping-note">
-              <MapPin size={22} />
-              <p>Maparea cu institutiile se face dupa CNP si adresa de domiciliu pentru persoane fizice, respectiv dupa CIF/CUI si adresa sediului social pentru persoane juridice.</p>
-            </aside>
+            ))}
+            {!directoryLoading && directoryUsers.length === 0 && <p className="empty-state">Niciun utilizator nu corespunde filtrelor curente.</p>}
           </div>
+
+          {directoryTotalPages > 1 && (
+            <div className="institution-pagination institution-list-pagination">
+              <span>Pagina {directoryPage} din {directoryTotalPages}</span>
+              <div className="pagination-controls">
+                <button type="button" onClick={() => setDirectoryPage((current) => Math.max(1, current - 1))} disabled={directoryPage <= 1}>Anterior</button>
+                <button type="button" onClick={() => setDirectoryPage((current) => Math.min(directoryTotalPages, current + 1))} disabled={directoryPage >= directoryTotalPages}>Urmator</button>
+              </div>
+            </div>
+          )}
         </section>
       )}
 
-      {tab === "institutions" && (
-        <>
-          <section className="institution-approval-grid">
-            <article className="institution-approval-card primary-review">
+      {section !== "dashboard" && activeTab === "roles" && (
+        <section className="superadmin-role-grid">
+          {rolePresets.map((preset) => (
+            <article className={`role-preset-card tone-${preset.tone}`} key={preset.id}>
               <header>
-                <span><ShieldAlert size={24} /></span>
+                <span><Shield size={20} /></span>
                 <div>
-                  <p className="eyebrow">Aprobari institutii</p>
-                  <h2>Asteapta verificare administrator</h2>
+                  <h2>{preset.label}</h2>
+                  <p>{preset.description}</p>
                 </div>
               </header>
-              {pendingInstitutionRequests.length === 0 ? (
-                <p className="empty-state">Nu exista institutii in asteptare.</p>
-              ) : pendingInstitutionRequests.map((request) => (
-                <div className="institution-request-row" key={request.id}>
-                  <span className="admin-avatar-chip">{request.name.slice(0, 2).toUpperCase()}</span>
-                  <div>
-                    <strong>{request.name}</strong>
-                    <small>{request.email} · CIF {request.cif} · trimis {request.submittedAt ? new Date(request.submittedAt).toLocaleDateString("ro-RO") : "recent"}</small>
-                    <em>{request.documents ? Object.values(request.documents).filter(Boolean).length : 0} documente incarcate</em>
-                  </div>
-                  <button className="secondary-button" type="button">Vezi documente</button>
-                  <button className="primary-button" type="button" onClick={() => approveInstitutionRequest(request.email, request.name, request.cif)}>Aproba</button>
-                  <button className="secondary-button danger-action" type="button" onClick={() => rejectInstitutionRequest(request.email)}>Respinge</button>
-                </div>
-              ))}
-            </article>
-            <article className="institution-approval-card renewal-review">
-              <header>
-                <span><RefreshCw size={24} /></span>
-                <div>
-                  <p className="eyebrow">Revalidare anuala</p>
-                  <h2>Actualizare documente la 12 luni</h2>
-                </div>
-              </header>
-              <p className="muted">Institutiile trebuie sa actualizeze documentele sau sa confirme ca nu s-a schimbat nimic o data la 12 luni.</p>
-              {dueInstitutions.length === 0 ? (
-                <p className="empty-state">Toate institutiile sunt in termen.</p>
-              ) : dueInstitutions.map((institution) => (
-                <div className="renewal-row" key={institution.id}>
-                  <Clock3 size={18} />
-                  <div>
-                    <strong>{institution.name}</strong>
-                    <small>Scadent: {institution.nextDocumentReviewDueAt ?? "nesetat"}</small>
-                  </div>
-                  <button className="secondary-button" type="button" onClick={() => confirmAnnualReview(institution.id)}>Confirma neschimbat</button>
-                </div>
-              ))}
-            </article>
-          </section>
+              <div className="capability-list">
+                {Object.keys(capabilityLabels).map((capability) => {
+                  const key = capability as CapabilityKey;
+                  const enabled = preset.capabilities.includes(key);
 
-          <section className="admin-grid">
-            <form className="panel admin-form" onSubmit={handleInstitutionSubmit}>
-              <h2>Adauga institutie</h2>
-              <label>Denumire<input name="name" placeholder="Primaria ..." required /></label>
-              <label>Localitate<input name="locality" placeholder="Localitate" required /></label>
-              <label>CIF institutie<input name="cif" placeholder="CIF" required /></label>
-              <label>Tip<select name="type" defaultValue="primarie"><option value="primarie">Primarie / UAT</option><option value="institutie">Institutie</option></select></label>
-              <button className="primary-button" type="submit">Salveaza institutie</button>
-            </form>
-            <div className="admin-table panel">
-              <div className="admin-user-head institutions-head">
-                <span>Institutie</span>
-                <span>Localitate</span>
-                <span>CIF</span>
-                <span>Status</span>
+                  return (
+                    <span className={enabled ? "enabled" : ""} key={key}>
+                      <CheckCircle2 size={16} />
+                      {capabilityLabels[key]}
+                    </span>
+                  );
+                })}
               </div>
+            </article>
+          ))}
+        </section>
+      )}
+
+      {section !== "dashboard" && activeTab === "institutions" && (
+        <section className="superadmin-institutions">
+          <section className="panel superadmin-panel">
+            <header className="admin-section-head">
+              <div>
+                <p className="eyebrow">Institutii platforma</p>
+                <h2>Lista institutii</h2>
+                <span>Filtreaza institutiile, activeaza sau dezactiveaza accesul lor in platforma.</span>
+              </div>
+            </header>
+            <div className="admin-table-toolbar superadmin-toolbar">
+              <label className="admin-table-search clean-search">
+                <Search size={18} />
+                <input value={institutionQuery} onChange={(event) => setInstitutionQuery(event.target.value)} placeholder="Cauta institutie, localitate sau CIF" />
+              </label>
+              <select value={institutionStatus} onChange={(event) => setInstitutionStatus(event.target.value)}>
+                <option value="all">Toate statusurile</option>
+                <option value="activa">Active</option>
+                <option value="in_verificare">In verificare</option>
+                <option value="dezactivata">Dezactivate</option>
+              </select>
+            </div>
+            <div className="admin-security-list institution-list">
               {filteredInstitutions.map((institution) => (
-                <article key={institution.id}>
-                  <Landmark size={20} />
-                  <div>
+                <article className="admin-security-row" key={institution.id}>
+                  <span className="admin-avatar-chip institution"><Building2 size={20} /></span>
+                  <div className="admin-identity">
                     <strong>{institution.name}</strong>
                     <span>{institution.locality} · CIF {institution.cif}</span>
                     <small>Ultima verificare: {institution.lastDocumentReviewAt ?? "nesetat"} · urmatoarea: {institution.nextDocumentReviewDueAt ?? "nesetat"}</small>
                   </div>
-                  <span className={`status-chip ${institution.status === "activa" ? "received" : "waiting"}`}>{statusLabel(institution.status)}</span>
-                  <button className="secondary-button" type="button" onClick={() => confirmAnnualReview(institution.id)}><FileCheck2 size={16} /> Confirma 12 luni</button>
+                  <span className={`admin-status-pill ${institution.status === "activa" ? "active" : "inactive"}`}>{statusLabel(institution.status)}</span>
+                  <span className="admin-role-badge tone-review">{institution.verificationStatus === "approved" ? "Aprobata" : institution.verificationStatus === "renewal_due" ? "Revizuire" : "Documente"}</span>
+                  <button className="secondary-button" type="button" onClick={() => toggleInstitutionStatus(institution.id)}>
+                    {institution.status === "activa" ? "Dezactiveaza" : "Activeaza"}
+                  </button>
+                  <button className="secondary-button" type="button" onClick={() => confirmAnnualReview(institution.id)}>
+                    Confirma 12 luni
+                  </button>
+                  <button
+                    className="secondary-button danger-action"
+                    type="button"
+                    aria-label={`Sterge institutia ${institution.name}`}
+                    onClick={() => deletePlatformUser(Number(institution.id), institution.name)}
+                  >
+                    <Trash2 size={16} />
+                  </button>
                 </article>
               ))}
             </div>
           </section>
-        </>
-      )}
 
-      {tab === "persons" && (
-        <section className="admin-table panel">
-          <div className="admin-user-head people-head">
-            <span>Persoana</span>
-            <span>CNP</span>
-            <span>Localitate</span>
-            <span>Status</span>
-          </div>
-          {filteredPersons.map((person) => (
-            <article key={person.id}>
-              <UserRound size={20} />
-              <div><strong>{person.name}</strong><span>CNP {person.cnp} · {person.locality}</span></div>
-              <span className={`status-chip ${person.status === "legat" ? "received" : "waiting"}`}>{statusLabel(person.status)}</span>
-              <button className="secondary-button" type="button" onClick={() => linkPerson(person.id)}>Leaga dupa CNP</button>
-            </article>
-          ))}
-        </section>
-      )}
-
-      {tab === "companies" && (
-        <section className="admin-table panel">
-          <div className="admin-user-head people-head">
-            <span>Companie</span>
-            <span>CIF</span>
-            <span>Localitate / sediu</span>
-            <span>Status</span>
-          </div>
-          {filteredCompanies.map((company) => (
-            <article key={company.id}>
-              <Building2 size={20} />
-              <div><strong>{company.name}</strong><span>CIF {company.cif} · {company.locality}</span></div>
-              <span className={`status-chip ${company.status === "legat" ? "received" : "waiting"}`}>{statusLabel(company.status)}</span>
-              <button className="secondary-button" type="button" onClick={() => linkCompany(company.id)}>Leaga dupa CIF</button>
-            </article>
-          ))}
-        </section>
-      )}
-
-      {tab === "relations" && (
-        <section className="admin-grid">
-          <form className="panel admin-form wide" onSubmit={handleDatabaseImport}>
-            <Database size={26} />
-            <h2>Import baza taxe si impozite</h2>
-            <p className="muted">Format demo CSV: tip, identificator, nume. Exemplu: PF,1900101123456,Popescu Ion sau PJ,RO11223344,Acme SRL.</p>
-            <label>Institutia sursa<select name="institutionId">{institutions.map((institution) => <option value={institution.id} key={institution.id}>{institution.name}</option>)}</select></label>
-            <label>Date import<textarea name="payload" placeholder={"PF,1900101123456,Popescu Ion\nPJ,RO11223344,Acme Construct SRL"} required /></label>
-            <button className="primary-button" type="submit"><FileUp size={18} /> Incarca baza locala</button>
-          </form>
-          <form className="panel admin-form wide" onSubmit={handleManualTaxpayerSubmit}>
-            <UserRound size={26} />
-            <h2>Adaugare manuala contribuabil</h2>
-            <p className="muted">Pentru persoane fizice referinta principala este CNP + localitate/sector/adresa. Pentru companii referinta principala este CIF/CUI + adresa sediului social.</p>
-            <label>Tip contribuabil<select name="kind" defaultValue="pf"><option value="pf">Persoana fizica</option><option value="pj">Persoana juridica</option></select></label>
-            <label>Institutia<select name="institutionId">{institutions.map((institution) => <option value={institution.id} key={institution.id}>{institution.name}</option>)}</select></label>
-            <label>CNP / CIF<input name="identifier" placeholder="CNP sau CIF/CUI" required /></label>
-            <label>Nume / Denumire<input name="name" placeholder="Nume persoana sau companie" required /></label>
-            <div className="form-grid two">
-              <label>Localitate<input name="city" placeholder="Localitate" required /></label>
-              <label>Sector<input name="sector" placeholder="Optional" /></label>
-            </div>
-            <label>Adresa domiciliu / sediu social<input name="address" placeholder="Strada, numar, bloc, apartament" /></label>
-            <button className="secondary-button" type="submit">Adauga in baza institutiei</button>
-          </form>
-          <article className="panel relation-note">
-            <Link2 size={28} />
-            <h2>Regula de legare</h2>
-            <p>Persoanele fizice se leaga de institutii dupa CNP si adresa de domiciliu: localitate, sector si adresa. Persoanele juridice se leaga dupa CIF/CUI si adresa sediului social. Acelasi CNP/CIF poate avea legaturi active cu institutii diferite.</p>
+          <article className="panel institution-approval-card primary-review">
+            <header>
+              <span><ShieldAlert size={22} /></span>
+              <div>
+                <p className="eyebrow">Aprobari institutii</p>
+                <h2>Documente de inrolare primite</h2>
+              </div>
+            </header>
+            {pendingInstitutionRequests.length === 0 ? (
+              <p className="empty-state">Nu exista institutii in asteptare.</p>
+            ) : pendingInstitutionRequests.map((request) => (
+              <div className="institution-request-row" key={request.id}>
+                <span className="admin-avatar-chip">{request.name.slice(0, 2).toUpperCase()}</span>
+                <div>
+                  <strong>{request.name}</strong>
+                  <small>{request.email} · CIF {request.cif} · {request.submittedAt ? new Date(request.submittedAt).toLocaleDateString("ro-RO") : "trimis recent"}</small>
+                  <em>{request.documents ? Object.values(request.documents).filter(Boolean).length : 0} documente incarcate pentru inrolare</em>
+                </div>
+                <button className="secondary-button" type="button"><Eye size={16} /> Vezi documente</button>
+                <button className="primary-button" type="button" onClick={() => approveInstitutionRequest(request.id)}>Aproba</button>
+                <button className="secondary-button danger-action" type="button" onClick={() => rejectInstitutionRequest(request.id)}>Respinge</button>
+              </div>
+            ))}
           </article>
+
+          <article className="panel institution-approval-card renewal-review">
+            <header>
+              <span><Clock3 size={22} /></span>
+              <div>
+                <p className="eyebrow">Revizuire periodica</p>
+                <h2>Actualizare documente la 12 luni</h2>
+              </div>
+            </header>
+            <p className="muted">Institutiile trebuie sa actualizeze documentele sau sa confirme ca nu s-a schimbat nimic o data la 12 luni.</p>
+            {dueInstitutions.length === 0 ? (
+              <p className="empty-state">Toate institutiile sunt in termen.</p>
+            ) : dueInstitutions.map((institution) => (
+              <div className="renewal-row" key={institution.id}>
+                <FileCheck2 size={18} />
+                <div>
+                  <strong>{institution.name}</strong>
+                  <small>Scadent: {institution.nextDocumentReviewDueAt ?? "nesetat"}</small>
+                </div>
+                <button className="secondary-button" type="button" onClick={() => confirmAnnualReview(institution.id)}>Confirma neschimbat</button>
+              </div>
+            ))}
+          </article>
+        </section>
+      )}
+
+      {selectedAdmin && (
+        <section className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Administrator ${selectedAdmin.name}`}>
+          <div className="modal-panel admin-profile-modal admin-access-modal">
+            <header className="modal-head">
+              <div>
+                <p className="eyebrow">Administrator platforma</p>
+                <h2>{selectedAdmin.name}</h2>
+                <p>{selectedAdmin.email}</p>
+              </div>
+              <button className="modal-close" type="button" aria-label="Inchide" onClick={() => setSelectedAdmin(null)}><X size={20} /></button>
+            </header>
+            <div className="profile-modal-stats">
+              <span><Shield size={17} /><strong>{accessFor(selectedAdmin, access).preset.shortLabel}</strong> rol curent</span>
+              <span><LockKeyhole size={17} /><strong>{accessFor(selectedAdmin, access).capabilities.length}</strong> capabilitati</span>
+              <span className={`status-chip ${selectedAdmin.status === "activ" ? "received" : "neutral"}`}>{userStatusLabel(selectedAdmin.status)}</span>
+            </div>
+            <div className="profile-admin-controls admin-access-controls">
+              <label className="compact-select">Rol de securitate
+                <select value={accessFor(selectedAdmin, access).preset.id} onChange={(event) => updateAdminPreset(selectedAdmin.id, event.target.value)}>
+                  {rolePresets.map((preset) => <option value={preset.id} key={preset.id}>{preset.label}</option>)}
+                </select>
+              </label>
+              <label className="compact-select">Status cont
+                <select value={selectedAdmin.status} onChange={(event) => updateAdminStatus(selectedAdmin.id, event.target.value as PlatformUser["status"])}>
+                  <option value="activ">Activ</option>
+                  <option value="in_verificare">In verificare</option>
+                  <option value="suspendat">Suspendat</option>
+                </select>
+              </label>
+            </div>
+            <div className="capability-modal-grid">
+              {Object.entries(capabilityLabels).map(([key, label]) => {
+                const enabled = accessFor(selectedAdmin, access).capabilities.includes(key as CapabilityKey);
+
+                return (
+                  <span className={enabled ? "enabled" : ""} key={key}>
+                    <CheckCircle2 size={16} />
+                    {label}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {isAddAdminOpen && (
+        <section className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Adauga administrator platforma">
+          <form className="modal-panel admin-profile-modal admin-access-modal" onSubmit={handleCreateAdmin}>
+            <header className="modal-head">
+              <div>
+                <p className="eyebrow">Administrator nou</p>
+                <h2>Adauga administrator platforma</h2>
+                <p>Acest cont va administra platforma, nu o institutie.</p>
+              </div>
+              <button className="modal-close" type="button" aria-label="Inchide" onClick={() => setIsAddAdminOpen(false)}><X size={20} /></button>
+            </header>
+            <div className="form-grid two admin-modal-form">
+              <label>Nume administrator
+                <input name="name" placeholder="Ex: Ionescu Ana" required />
+              </label>
+              <label>Email
+                <input name="email" placeholder="admin@docmanager.ro" type="email" required />
+              </label>
+              <label>Rol initial
+                <select name="presetId" defaultValue="platform_readonly">
+                  {rolePresets.map((preset) => <option value={preset.id} key={preset.id}>{preset.label}</option>)}
+                </select>
+              </label>
+            </div>
+            <button className="primary-button admin-action-button" type="submit">
+              <Plus size={18} />
+              Creeaza administrator
+            </button>
+          </form>
+        </section>
+      )}
+
+      {directoryDetailUser && (
+        <section className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Detalii ${directoryDetailUser.name}`}>
+          <div className="modal-panel admin-profile-modal directory-detail-modal">
+            <header className="modal-head">
+              <div>
+                <p className="eyebrow">{directoryAccountTypeLabel(directoryDetailUser.accountType)}</p>
+                <h2>{directoryDetailUser.name}</h2>
+                <p>{directoryDetailUser.email}</p>
+              </div>
+              <button className="modal-close" type="button" aria-label="Inchide" onClick={() => setDirectoryDetailUser(null)}><X size={20} /></button>
+            </header>
+            <div className="profile-modal-stats">
+              <span className={`status-chip ${directoryDetailUser.status === "activ" ? "received" : "neutral"}`}>{userStatusLabel(directoryDetailUser.status)}</span>
+              {directoryDetailUser.clientCode && <span>Cod client <strong>#{directoryDetailUser.clientCode}</strong></span>}
+              {directoryDetailUser.cif && <span>CIF <strong>{directoryDetailUser.cif}</strong></span>}
+            </div>
+            <div className="directory-detail-grid">
+              <span>Telefon <strong>{directoryDetailUser.phone ?? "nesetat"}</strong></span>
+              <span>Localitate <strong>{directoryDetailUser.locality || "nesetata"}</strong></span>
+              <span>Judet <strong>{directoryDetailUser.county || "nesetat"}</strong></span>
+              <span>Institutie <strong>{directoryDetailUser.linkedInstitutionNames.length > 0 ? directoryDetailUser.linkedInstitutionNames.join(", ") : "Independent"}</strong></span>
+            </div>
+            <div className="taxpayer-modal-actions">
+              <button className="secondary-button" type="button" disabled title="Editarea va fi disponibila intr-o versiune viitoare">
+                <Pencil size={16} /> Editeaza
+              </button>
+              <button
+                className="secondary-button danger-action"
+                type="button"
+                onClick={() => deletePlatformUser(directoryDetailUser.id, directoryDetailUser.name)}
+              >
+                <Trash2 size={16} /> Sterge contul
+              </button>
+            </div>
+          </div>
         </section>
       )}
     </>

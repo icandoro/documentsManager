@@ -48,12 +48,24 @@ export async function POST(request: Request, context: RouteContext) {
   return proxyRequest(request, context);
 }
 
+export async function PATCH(request: Request, context: RouteContext) {
+  return proxyRequest(request, context);
+}
+
+export async function PUT(request: Request, context: RouteContext) {
+  return proxyRequest(request, context);
+}
+
+export async function DELETE(request: Request, context: RouteContext) {
+  return proxyRequest(request, context);
+}
+
 export async function OPTIONS() {
   return new Response(null, {
     status: 204,
     headers: {
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
     },
   });
 }

@@ -5,7 +5,7 @@ export type PackagePurpose = "send" | "signature";
 export type PackageDocumentStatus = "Trimis" | "Asteapta semnare" | "Semnat" | "Primire confirmata";
 
 export type PackageDocument = {
-  id?: number;
+  id?: number | string;
   title: string;
   category?: string;
   status: PackageDocumentStatus | string;
@@ -45,6 +45,22 @@ export function receivedPackagesStorageKey(contextId = "independent") {
 
 export function packageDocumentTitle(document: string | PackageDocument) {
   return typeof document === "string" ? document : document.title;
+}
+
+export function createPackageDocumentId(sourceId: number | string, index = 0) {
+  const random = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+  return `doc-${sourceId}-${index}-${random}`;
+}
+
+export function packageDocumentIdentity(document: string | PackageDocument, fallbackId: string) {
+  if (typeof document !== "string" && document.id !== undefined && document.id !== null) {
+    return String(document.id);
+  }
+
+  return fallbackId;
 }
 
 export function normalizePackageDocument(document: string | PackageDocument, purpose: PackagePurpose = "send"): PackageDocument {

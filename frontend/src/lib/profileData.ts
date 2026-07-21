@@ -13,6 +13,7 @@ export type GeneralProfileData = {
 
 export type ContextProfileData = {
   correspondenceAddress: string;
+  county: string;
   locality: string;
   postalCode: string;
   fiscalRole: string;
@@ -94,6 +95,7 @@ export function contextProfileStorageKey(contextId: string) {
 export function defaultContextProfile(context: AccountContext): ContextProfileData {
   return {
     correspondenceAddress: context.address ?? "",
+    county: "",
     locality: context.locality ?? "",
     postalCode: "",
     fiscalRole: context.type === "independent" ? "Activitate independenta" : "Contribuabil in evidenta institutiei",

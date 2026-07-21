@@ -9,6 +9,7 @@ import {
   writeContextProfile,
   writeGeneralProfile,
 } from "@/lib/profileData";
+import { ROMANIA_COUNTIES, localityOptions } from "@/lib/romaniaLocalities";
 import { Building2, KeyRound, LockKeyhole, MapPin, QrCode, ShieldCheck, Smartphone, UserRound } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -121,7 +122,7 @@ export function ProfileManager() {
                 <option value="en">English</option>
               </select>
             </label>
-            <label>Timezone
+            <label>Fus orar
               <select value={generalProfile.timezone} onChange={(event) => updateGeneral("timezone", event.target.value)}>
                 <option>Europe/Bucharest</option>
                 <option>Europe/London</option>
@@ -137,9 +138,23 @@ export function ProfileManager() {
             </div>
           </div>
           <div className="two-cols">
-            <label>Localitate<input value={contextProfile.locality} onChange={(event) => updateContext("locality", event.target.value)} /></label>
-            <label>Cod postal<input value={contextProfile.postalCode} onChange={(event) => updateContext("postalCode", event.target.value)} /></label>
+            <label>Judet
+              <select value={contextProfile.county} onChange={(event) => {
+                updateContext("county", event.target.value);
+                updateContext("locality", "");
+              }}>
+                <option value="">Selecteaza judetul</option>
+                {ROMANIA_COUNTIES.map((county) => <option key={county} value={county}>{county}</option>)}
+              </select>
+            </label>
+            <label>Localitate
+              <select value={contextProfile.locality} onChange={(event) => updateContext("locality", event.target.value)} disabled={!contextProfile.county}>
+                <option value="">{contextProfile.county ? "Selecteaza localitatea" : "Alege mai intai judetul"}</option>
+                {localityOptions(contextProfile.county, contextProfile.locality).map((locality) => <option key={locality} value={locality}>{locality}</option>)}
+              </select>
+            </label>
           </div>
+          <label>Cod postal<input value={contextProfile.postalCode} onChange={(event) => updateContext("postalCode", event.target.value)} /></label>
           <label>Adresa de corespondenta in acest context
             <input value={contextProfile.correspondenceAddress} onChange={(event) => updateContext("correspondenceAddress", event.target.value)} placeholder="Strada, numar, bloc, apartament" />
           </label>
@@ -163,7 +178,7 @@ export function ProfileManager() {
 
         <aside className="panel security-panel" id="security">
           <ShieldCheck size={32} />
-          <h2>Security</h2>
+          <h2>Securitate</h2>
           <p>Email si parola, sesiuni pe baza de token JWT si verificare 2FA pentru actiuni sensibile.</p>
           <div className="security-row"><LockKeyhole size={18} /> Parola configurata</div>
           <div className="security-row"><ShieldCheck size={18} /> 2FA recomandat</div>

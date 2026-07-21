@@ -7,6 +7,7 @@ import { PackageTemplate, readPackageTemplates, writePackageTemplates } from "@/
 import {
   PackageGroup,
   PackagePurpose,
+  createPackageDocumentId,
   readSentPackages,
   receivedPackagesStorageKey,
   sentPackagesStorageKey,
@@ -25,6 +26,8 @@ type StoredDocument = {
   type: string;
   category: string;
   size: string;
+  storageName?: string;
+  uploadedAt?: string;
 };
 
 const categoryOptions = ["Identitate", "HR", "Civil", "Contracte", "Medical", "Financiar", "Altul"];
@@ -44,6 +47,62 @@ function formatBytes(bytes: number) {
   }
 
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function buildStorageName(fileName: string, index: number) {
+  const extension = fileName.includes(".") ? fileName.split(".").pop() : "bin";
+  const baseName = fileName
+    .replace(/\.[^.]+$/, "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase() || "document";
+  const suffix = Math.random().toString(36).slice(2, 8);
+
+  return `${Date.now()}-${index}-${suffix}-${baseName}.${extension}`;
+}
+
+async function uploadDocumentToServer(file: File, category: string, ownerId?: number): Promise<StoredDocument | null> {
+  if (!ownerId) return null;
+
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("category", category);
+  formData.append("ownerId", String(ownerId));
+
+  try {
+    const response = await fetch("/api/documents/upload", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) return null;
+
+    const payload = await response.json() as {
+      id?: number;
+      title?: string;
+      type?: string;
+      category?: string;
+      sizeBytes?: number;
+      storageName?: string;
+      uploadedAt?: string;
+    };
+
+    if (typeof payload.id !== "number") return null;
+
+    return {
+      id: payload.id,
+      title: payload.title ?? file.name.replace(/\.[^.]+$/, ""),
+      type: payload.type ?? category,
+      category: payload.category ?? category,
+      size: formatBytes(payload.sizeBytes ?? file.size),
+      storageName: payload.storageName,
+      uploadedAt: payload.uploadedAt,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function initialDocuments(): StoredDocument[] {
@@ -125,6 +184,8 @@ function readDocumentsForContext(contextId: string) {
         type: item.type,
         category: item.category ?? item.type,
         size: item.size,
+        storageName: item.storageName,
+        uploadedAt: item.uploadedAt,
       }));
     }
   } catch {
@@ -320,21 +381,31 @@ export function DocumentsManager() {
     setManualRecipientEmail("");
   }
 
-  function handleUpload(event: ChangeEvent<HTMLInputElement>) {
+  async function handleUpload(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
     const files = Array.from(event.target.files ?? []);
     if (files.length === 0) return;
 
-    const uploaded = files.map((file, index) => ({
-      id: Date.now() + index,
-      title: file.name.replace(/\.[^.]+$/, ""),
-      type: selectedCategory,
-      category: selectedCategory,
-      size: formatBytes(file.size),
+    const uploadedAt = new Date().toISOString();
+    const uploaded = await Promise.all(files.map(async (file, index) => {
+      const serverDocument = await uploadDocumentToServer(file, selectedCategory, currentUser?.databaseId);
+
+      if (serverDocument) return serverDocument;
+
+      return {
+        id: Date.now() + index + Math.floor(Math.random() * 100000),
+        title: file.name.replace(/\.[^.]+$/, ""),
+        type: selectedCategory,
+        category: selectedCategory,
+        size: formatBytes(file.size),
+        storageName: buildStorageName(file.name, index),
+        uploadedAt,
+      };
     }));
 
     setItems((current) => [...uploaded, ...current]);
     toast.success(`${files.length === 1 ? "Document incarcat" : "Documente incarcate"} cu succes.`);
-    event.target.value = "";
+    input.value = "";
   }
 
   function handleCreatePackage() {
@@ -525,8 +596,8 @@ export function DocumentsManager() {
       name,
       date: todayLabel(),
       purpose,
-      documents: selectedDocuments.map((item) => ({
-        id: item.id,
+      documents: selectedDocuments.map((item, index) => ({
+        id: createPackageDocumentId(item.id, index),
         title: item.title,
         category: item.category,
         status: purpose === "signature" ? "Asteapta semnare" : "Trimis",
@@ -564,7 +635,7 @@ export function DocumentsManager() {
       purpose,
       singleDocument: true,
       documents: [{
-        id: selectedDocument.id,
+        id: createPackageDocumentId(selectedDocument.id),
         title: selectedDocument.title,
         category: selectedDocument.category,
         status: purpose === "signature" ? "Asteapta semnare" : "Trimis",
@@ -600,8 +671,8 @@ export function DocumentsManager() {
       name: template.name,
       date: todayLabel(),
       purpose,
-      documents: template.documents.map((item) => ({
-        id: item.id,
+      documents: template.documents.map((item, index) => ({
+        id: createPackageDocumentId(item.id, index),
         title: item.title,
         category: item.category,
         status: purpose === "signature" ? "Asteapta semnare" : "Trimis",

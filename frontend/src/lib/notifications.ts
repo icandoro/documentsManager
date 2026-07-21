@@ -1,4 +1,5 @@
 export type NotificationTone = "success" | "info" | "warning" | "error";
+export type NotificationCategory = "document" | "security" | "account" | "system";
 
 export type AppNotification = {
   id: string;
@@ -7,40 +8,13 @@ export type AppNotification = {
   createdAt: string;
   tone: NotificationTone;
   read: boolean;
+  category?: NotificationCategory;
   href?: string;
 };
 
 export const notificationsStorageKey = "docmanager_notifications";
 
-const defaultNotifications: AppNotification[] = [
-  {
-    id: "notif-received-package",
-    title: "Pachet nou primit",
-    description: "Ai primit un pachet pentru semnare: Dosar angajare.",
-    createdAt: "azi, 10:24",
-    tone: "info",
-    read: false,
-    href: "/documents/received",
-  },
-  {
-    id: "notif-signed-document",
-    title: "Document semnat",
-    description: "Contract de munca a fost incarcat semnat de destinatar.",
-    createdAt: "ieri, 16:10",
-    tone: "success",
-    read: false,
-    href: "/documents/sent",
-  },
-  {
-    id: "notif-security",
-    title: "Recomandare security",
-    description: "Activeaza autentificarea in doi pasi pentru protectie suplimentara.",
-    createdAt: "12 iul. 2026",
-    tone: "warning",
-    read: true,
-    href: "/profile#security",
-  },
-];
+const defaultNotifications: AppNotification[] = [];
 
 export function readNotifications() {
   if (typeof window === "undefined") return defaultNotifications;
@@ -69,6 +43,22 @@ export function writeNotifications(notifications: AppNotification[]) {
 
 export function markAllNotificationsRead() {
   const next = readNotifications().map((notification) => ({ ...notification, read: true }));
+
+  writeNotifications(next);
+  return next;
+}
+
+export function markNotificationRead(id: string) {
+  const next = readNotifications().map((notification) =>
+    notification.id === id ? { ...notification, read: true } : notification,
+  );
+
+  writeNotifications(next);
+  return next;
+}
+
+export function deleteNotification(id: string) {
+  const next = readNotifications().filter((notification) => notification.id !== id);
 
   writeNotifications(next);
   return next;

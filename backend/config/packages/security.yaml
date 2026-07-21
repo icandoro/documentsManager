@@ -15,6 +15,8 @@ security:
       pattern: ^/api
       stateless: true
       provider: app_user_provider
+      custom_authenticators:
+        - App\Security\ApiTokenAuthenticator
       json_login:
         check_path: /api/auth/login
         username_path: email
@@ -26,4 +28,5 @@ security:
     - { path: ^/api/ocr/identity, roles: PUBLIC_ACCESS }
     - { path: ^/api/public, roles: PUBLIC_ACCESS }
     - { path: ^/api/health, roles: PUBLIC_ACCESS }
+    - { path: ^/api/platform-admin, roles: [ROLE_SUPER_ADMIN, ROLE_ADMIN, ROLE_PLATFORM_ADMIN] }
     - { path: ^/api, roles: ROLE_USER }

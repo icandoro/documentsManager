@@ -4,7 +4,7 @@ export type PlatformInstitution = {
   locality: string;
   cif: string;
   type: "primarie" | "institutie";
-  status: "activa" | "in_verificare";
+  status: "activa" | "in_verificare" | "dezactivata";
   taxpayers: number;
   verificationStatus?: "approved" | "pending_documents" | "renewal_due";
   lastDocumentReviewAt?: string;
@@ -68,6 +68,7 @@ export type PlatformUserRole = "user" | "admin" | "superadmin";
 
 export type PlatformUser = {
   id: string;
+  databaseId?: number;
   name: string;
   email: string;
   role: PlatformUserRole;
@@ -97,7 +98,7 @@ export const adminPersonsStorageKey = "docmanager_admin_persons";
 export const adminCompaniesStorageKey = "docmanager_admin_companies";
 export const adminUsersStorageKey = "docmanager_admin_users";
 export const adminSeedVersionStorageKey = "docmanager_admin_seed_version";
-export const adminSeedVersion = "demo-reset-2026-07-14-v1";
+export const adminSeedVersion = "db-backed-reset-2026-07-19-v1";
 
 export const defaultPlatformInstitutions: PlatformInstitution[] = [
   {
@@ -107,7 +108,7 @@ export const defaultPlatformInstitutions: PlatformInstitution[] = [
     cif: "12345678",
     type: "primarie",
     status: "activa",
-    taxpayers: 2,
+    taxpayers: 12,
     verificationStatus: "approved",
     lastDocumentReviewAt: "2026-07-01",
     nextDocumentReviewDueAt: "2027-07-01",
@@ -119,21 +120,16 @@ export const defaultPlatformInstitutions: PlatformInstitution[] = [
     cif: "87654321",
     type: "primarie",
     status: "activa",
-    taxpayers: 2,
+    taxpayers: 5,
     verificationStatus: "approved",
     lastDocumentReviewAt: "2026-07-01",
     nextDocumentReviewDueAt: "2027-07-01",
   },
 ];
 
-export const defaultTaxpayerPersons: TaxpayerPerson[] = [
-  { id: "pf-demo-tax-joita", name: "Popescu Ion", cnp: "1800101000100", locality: "Joita", institutionId: "primaria-joita", status: "legat" },
-  { id: "pf-demo-tax-pleasov", name: "Popescu Ion", cnp: "1800101000100", locality: "Pleasov", institutionId: "primaria-pleasov", status: "legat" },
-];
+export const defaultTaxpayerPersons: TaxpayerPerson[] = [];
 
-export const defaultTaxpayerCompanies: TaxpayerCompany[] = [
-  { id: "pj-demo-tax", name: "Demo Construct SRL", cif: "RO11223344", locality: "Joita", institutionId: "primaria-joita", status: "legat" },
-];
+export const defaultTaxpayerCompanies: TaxpayerCompany[] = [];
 
 export const defaultPlatformUsers: PlatformUser[] = [
   {
@@ -160,7 +156,7 @@ export const defaultPlatformUsers: PlatformUser[] = [
     accountType: "individual",
     firstName: "Ion",
     lastName: "Popescu",
-    cnp: "1900101123456",
+    cnp: "1800101000100",
     phone: "+40 700 000 010",
     address: { street: "Strada Principala", number: "24", city: "Joita", county: "Giurgiu", postalCode: "087150" },
     status: "activ",
@@ -238,9 +234,23 @@ export function ensureAdminSeedVersion() {
     "docmanager_token",
     "docmanager_user",
     "docmanager_user_role",
+    "docmanager_notifications",
+    "docmanager_general_profile",
     "docmanager_pending_registration",
     "docmanager_institution_onboarding",
   ].forEach((key) => window.localStorage.removeItem(key));
+
+  Object.keys(window.localStorage)
+    .filter((key) =>
+      key.startsWith("docmanager_documents_") ||
+      key.startsWith("docmanager_sent_packages_") ||
+      key.startsWith("docmanager_received_packages_") ||
+      key.startsWith("docmanager_package_templates") ||
+      key.startsWith("docmanager_context_profile_") ||
+      key.startsWith("docmanager_deleted_received_"),
+    )
+    .forEach((key) => window.localStorage.removeItem(key));
+
   window.localStorage.setItem(adminSeedVersionStorageKey, adminSeedVersion);
 }
 

@@ -13,17 +13,7 @@ export type PackageTemplate = {
 
 export const packageTemplatesStorageKey = "docmanager_package_templates";
 
-export const defaultPackageTemplates: PackageTemplate[] = [
-  {
-    id: "template-dosar-angajare",
-    name: "test",
-    createdAt: "12 iul. 2026",
-    documents: [
-      { id: 1, title: "Buletin", category: "Identitate" },
-      { id: 2, title: "Contract de munca", category: "HR" },
-    ],
-  },
-];
+export const defaultPackageTemplates: PackageTemplate[] = [];
 
 export function packageTemplatesStorageKeyForContext(contextId = "independent") {
   return `${packageTemplatesStorageKey}_${contextId}`;
