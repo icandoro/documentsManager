@@ -5,7 +5,3 @@ namespace: ghiseul-cetateanului
 
 resources:
   - ../../base
-
-commonLabels:
-  app.kubernetes.io/part-of: documents-manager
-  app.kubernetes.io/managed-by: argocd
