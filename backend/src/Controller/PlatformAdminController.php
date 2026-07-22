@@ -3,7 +3,6 @@
 namespace App\Controller;
 
 use App\Service\ClientCodeGenerator;
-use App\Service\InstitutionSlugGenerator;
 use Doctrine\DBAL\Connection;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -132,12 +131,9 @@ class PlatformAdminController extends AbstractController
     public function institutions(Connection $connection): JsonResponse
     {
         $rows = $connection->fetchAllAssociative(
-            'SELECT u.id, u.email, u.roles, p.first_name, p.last_name, p.phone, p.person_type, p.company_name, p.tax_identifier, p.optional_fields
-             FROM users u
-             INNER JOIN profiles p ON p.user_id = u.id
-             WHERE p.person_type = ?
-             ORDER BY u.id DESC',
-            ['institution']
+            'SELECT i.*, (SELECT COUNT(*) FROM profiles p WHERE p.institution_id = i.id) AS staff_count
+             FROM institutions i
+             ORDER BY i.id DESC'
         );
 
         return $this->json([
@@ -159,21 +155,12 @@ class PlatformAdminController extends AbstractController
             return $this->json(['message' => 'Status invalid.'], 422);
         }
 
-        $profile = $connection->fetchAssociative('SELECT id, optional_fields FROM profiles WHERE user_id = ?', [$id]);
-        if (!$profile) {
+        $institution = $connection->fetchAssociative('SELECT id FROM institutions WHERE id = ?', [$id]);
+        if (!$institution) {
             return $this->json(['message' => 'Institutia nu a fost gasita.'], 404);
         }
 
-        $optionalFields = $this->decodeJson($profile['optional_fields'] ?? '{}');
-        $optionalFields['status'] = $status;
-        $optionalFields['institutionApproval'] = [
-            'status' => $status,
-            'updatedAt' => (new \DateTimeImmutable())->format(DATE_ATOM),
-        ];
-
-        $connection->update('profiles', [
-            'optional_fields' => json_encode($optionalFields, JSON_THROW_ON_ERROR),
-        ], ['id' => $profile['id']]);
+        $connection->update('institutions', ['status' => $status], ['id' => $id]);
 
         return $this->json([
             'message' => 'Statusul institutiei a fost actualizat.',
@@ -181,8 +168,36 @@ class PlatformAdminController extends AbstractController
         ]);
     }
 
+    #[Route('/institutions/{id}', name: 'platform_admin_institution_delete', methods: ['DELETE'])]
+    public function deleteInstitution(int $id, Connection $connection, KernelInterface $kernel): JsonResponse
+    {
+        $institution = $connection->fetchAssociative('SELECT id FROM institutions WHERE id = ?', [$id]);
+
+        if (!$institution) {
+            return $this->json(['message' => 'Institutia nu a fost gasita.'], 404);
+        }
+
+        $staffUserIds = $connection->fetchFirstColumn('SELECT user_id FROM profiles WHERE institution_id = ?', [$id]);
+        $projectDir = $kernel->getProjectDir();
+
+        foreach ($staffUserIds as $userId) {
+            // documents, profile and document_packages cascade off users.id.
+            $connection->delete('users', ['id' => (int) $userId]);
+            $this->removeDirectoryRecursively(sprintf('%s/var/uploads/documents/%d', $projectDir, $userId));
+            $this->removeDirectoryRecursively(sprintf('%s/var/uploads/institutions/%d', $projectDir, $userId));
+        }
+
+        // institution_taxpayers (the citizen/company roster) cascades off
+        // institutions.id via ON DELETE CASCADE.
+        $connection->delete('institutions', ['id' => $id]);
+
+        return $this->json([
+            'message' => 'Institutia, conturile ei de logare, documentele si cetatenii inrolati au fost sterse.',
+        ]);
+    }
+
     #[Route('/all-users', name: 'platform_admin_all_users', methods: ['GET'])]
-    public function allUsers(Request $request, Connection $connection, InstitutionSlugGenerator $slugGenerator, ClientCodeGenerator $clientCodeGenerator): JsonResponse
+    public function allUsers(Request $request, Connection $connection, ClientCodeGenerator $clientCodeGenerator): JsonResponse
     {
         $rows = $connection->fetchAllAssociative(
             'SELECT u.id, u.email, u.account_code, u.roles, p.first_name, p.last_name, p.phone, p.person_type, p.company_name, p.tax_identifier, p.optional_fields
@@ -192,14 +207,8 @@ class PlatformAdminController extends AbstractController
         );
 
         $institutions = [];
-        foreach ($rows as $row) {
-            if (($row['person_type'] ?? null) !== 'institution') {
-                continue;
-            }
-
-            $name = trim((string) ($row['company_name'] ?? '')) ?: (string) $row['email'];
-            $slug = $slugGenerator->fromNameAndCif($name, (string) ($row['tax_identifier'] ?? ''));
-            $institutions[$slug] = $name;
+        foreach ($connection->fetchAllAssociative('SELECT id, name FROM institutions') as $row) {
+            $institutions[(string) $row['id']] = (string) $row['name'];
         }
 
         $allUsers = array_map(function (array $row) use ($institutions, $clientCodeGenerator): array {
@@ -231,7 +240,7 @@ class PlatformAdminController extends AbstractController
                     : null,
                 'linkedInstitutionIds' => $linkedInstitutionIds,
                 'linkedInstitutionNames' => array_values(array_filter(array_map(
-                    fn (string $slug) => $institutions[$slug] ?? null,
+                    fn (string $institutionId) => $institutions[$institutionId] ?? null,
                     $linkedInstitutionIds
                 ))),
             ];
@@ -285,7 +294,7 @@ class PlatformAdminController extends AbstractController
         return $this->json([
             'users' => $pageItems,
             'institutions' => array_map(
-                fn (string $slug, string $name) => ['slug' => $slug, 'name' => $name],
+                fn (string $institutionId, string $name) => ['id' => $institutionId, 'name' => $name],
                 array_keys($institutions),
                 array_values($institutions)
             ),
@@ -299,39 +308,25 @@ class PlatformAdminController extends AbstractController
     }
 
     #[Route('/users/{id}', name: 'platform_admin_user_delete', methods: ['DELETE'])]
-    public function deleteUser(int $id, Connection $connection, InstitutionSlugGenerator $slugGenerator, KernelInterface $kernel): JsonResponse
+    public function deleteUser(int $id, Connection $connection, KernelInterface $kernel): JsonResponse
     {
-        $row = $connection->fetchAssociative(
-            'SELECT u.id, p.person_type, p.company_name, p.tax_identifier
-             FROM users u
-             LEFT JOIN profiles p ON p.user_id = u.id
-             WHERE u.id = ?',
-            [$id]
-        );
+        $row = $connection->fetchAssociative('SELECT id FROM users WHERE id = ?', [$id]);
 
         if (!$row) {
             return $this->json(['message' => 'Utilizatorul nu a fost gasit.'], 404);
         }
 
-        if (($row['person_type'] ?? null) === 'institution') {
-            $name = trim((string) ($row['company_name'] ?? ''));
-            $slug = $slugGenerator->fromNameAndCif($name, (string) ($row['tax_identifier'] ?? ''));
-            $connection->executeStatement('DELETE FROM institution_taxpayers WHERE institution_id = ?', [$slug]);
-        }
-
-        // documents, profile, document_packages and document_package_items all
-        // cascade off users.id via ON DELETE CASCADE foreign keys.
+        // documents, profile and document_packages cascade off users.id via
+        // ON DELETE CASCADE. This deletes one login only - if it's institution
+        // staff, the institution itself and its roster are untouched; use
+        // deleteInstitution() to remove an institution and all its staff.
         $connection->delete('users', ['id' => $id]);
 
         $projectDir = $kernel->getProjectDir();
         $this->removeDirectoryRecursively(sprintf('%s/var/uploads/documents/%d', $projectDir, $id));
         $this->removeDirectoryRecursively(sprintf('%s/var/uploads/institutions/%d', $projectDir, $id));
 
-        return $this->json([
-            'message' => ($row['person_type'] ?? null) === 'institution'
-                ? 'Institutia, documentele si cetatenii inrolati au fost sterse.'
-                : 'Utilizatorul si documentele asociate au fost sterse.',
-        ]);
+        return $this->json(['message' => 'Utilizatorul si documentele asociate au fost sterse.']);
     }
 
     private function removeDirectoryRecursively(string $path): void
@@ -389,17 +384,18 @@ class PlatformAdminController extends AbstractController
      */
     private function serializeInstitution(array $row): array
     {
-        $optionalFields = $this->decodeJson($row['optional_fields'] ?? '{}');
-
         return [
             'id' => (int) $row['id'],
-            'email' => $row['email'],
-            'name' => $row['company_name'] ?: trim(($row['first_name'] ?? '') . ' ' . ($row['last_name'] ?? '')) ?: $row['email'],
-            'cif' => $row['tax_identifier'] ?? null,
+            'name' => $row['name'],
+            'cif' => $row['cif'] ?? null,
+            'locality' => $row['locality'] ?? null,
+            'county' => $row['county'] ?? null,
+            'email' => $row['contact_email'] ?? null,
             'phone' => $row['phone'] ?? null,
-            'status' => $optionalFields['status'] ?? 'in_verificare',
-            'approval' => $optionalFields['institutionApproval'] ?? null,
-            'documents' => $optionalFields['onboardingDocuments'] ?? [],
+            'status' => $row['status'] ?? 'in_verificare',
+            'onboardingStatus' => $row['onboarding_status'] ?? null,
+            'documents' => $this->decodeJson($row['onboarding_documents'] ?? '{}'),
+            'staffCount' => (int) ($row['staff_count'] ?? 0),
         ];
     }
 

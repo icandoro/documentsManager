@@ -2,21 +2,22 @@
 
 import {
   AccountContext,
+  LinkedInstitutionsUser,
+  RealInstitutionSummary,
   readAccountContexts,
   readActiveAccountContextId,
-  writeAccountContexts,
+  syncContextsFromLinkedInstitutions,
   writeActiveAccountContextId,
 } from "@/lib/institutions";
-import {
-  readPlatformInstitutions,
-  readTaxpayerCompanies,
-  readTaxpayerPersons,
-  type PlatformInstitution,
-  type PlatformUser,
-} from "@/lib/adminData";
+import { apiFetch } from "@/lib/api";
 import { Building2, CheckCircle2, Clock3, Plus, Search, Shuffle, X } from "lucide-react";
 import { useMemo, useEffect, useState } from "react";
 import { toast } from "sonner";
+
+type StoredUser = LinkedInstitutionsUser & {
+  id?: string;
+  name?: string;
+};
 
 function contextLabel(type: AccountContext["type"]) {
   if (type === "independent") return "Activitate independenta";
@@ -24,43 +25,73 @@ function contextLabel(type: AccountContext["type"]) {
   return "Institutie";
 }
 
+function readStoredUser(): StoredUser | null {
+  const saved = window.localStorage.getItem("docmanager_user");
+
+  if (!saved) return null;
+
+  try {
+    return JSON.parse(saved) as StoredUser;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredUser(user: StoredUser) {
+  window.localStorage.setItem("docmanager_user", JSON.stringify(user));
+}
+
 export function InstitutionsManager() {
   const [contexts, setContexts] = useState<AccountContext[]>([]);
-  const [institutions, setInstitutions] = useState<PlatformInstitution[]>([]);
+  const [institutions, setInstitutions] = useState<RealInstitutionSummary[]>([]);
   const [activeId, setActiveId] = useState("independent");
   const [isInstitutionAccount, setIsInstitutionAccount] = useState(false);
-  const [currentUser, setCurrentUser] = useState<PlatformUser | null>(null);
+  const [currentUser, setCurrentUser] = useState<StoredUser | null>(null);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [institutionQuery, setInstitutionQuery] = useState("");
+  const [isLinking, setIsLinking] = useState(false);
   const activeContext = contexts.find((context) => context.id === activeId);
   const institutionContexts = contexts.filter((context) => context.id !== "independent");
   const independentContext = contexts.find((context) => context.id === "independent");
 
-  useEffect(() => {
-    const savedContexts = readAccountContexts();
-    const savedUser = window.localStorage.getItem("docmanager_user");
+  async function loadInstitutions(user: StoredUser | null) {
+    try {
+      const response = await apiFetch("/api/auth/institutions");
+      const data = await response.json();
+      const rawItems: Array<{ id: number; name: string; locality?: string; county?: string }> = Array.isArray(data.items) ? data.items : [];
+      const items: RealInstitutionSummary[] = rawItems.map((institution) => ({
+        id: String(institution.id),
+        name: institution.name,
+        locality: institution.locality,
+        county: institution.county,
+      }));
 
-    if (savedUser) {
-      try {
-        const parsed = JSON.parse(savedUser) as PlatformUser;
-        setIsInstitutionAccount(parsed.accountType === "institution");
-        setCurrentUser(parsed);
-      } catch {
-        setIsInstitutionAccount(false);
-        setCurrentUser(null);
-      }
+      setInstitutions(items);
+
+      const nextContexts = syncContextsFromLinkedInstitutions(user, items);
+
+      setContexts(nextContexts);
+      setActiveId(readActiveAccountContextId(nextContexts));
+    } catch {
+      toast.error("Nu am putut incarca lista de institutii.");
     }
+  }
 
-    setContexts(savedContexts);
-    setInstitutions(readPlatformInstitutions());
-    setActiveId(readActiveAccountContextId(savedContexts));
+  useEffect(() => {
+    const savedUser = readStoredUser();
+
+    setIsInstitutionAccount(savedUser?.accountType === "institution");
+    setCurrentUser(savedUser);
+    setContexts(readAccountContexts());
+    loadInstitutions(savedUser);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function activateContext(id: string) {
     const context = contexts.find((item) => item.id === id);
 
     if (context?.enrollmentStatus === "pending") {
-      toast.info("Institutia trebuie sa confirme cererea inainte de activare.");
+      toast.info("Institutia trebuie sa te adauge in evidenta ei inainte de activare.");
       return;
     }
 
@@ -72,68 +103,66 @@ export function InstitutionsManager() {
     const normalized = institutionQuery.trim().toLowerCase();
 
     return institutions.filter((institution) => {
-      const haystack = `${institution.name} ${institution.locality} ${institution.cif}`.toLowerCase();
+      const haystack = `${institution.name} ${institution.locality ?? ""} ${institution.county ?? ""}`.toLowerCase();
       return !normalized || haystack.includes(normalized);
     });
   }, [institutionQuery, institutions]);
 
-  function isAlreadyConfirmed(institutionId: string) {
-    if (!currentUser) return false;
-
-    if (currentUser.accountType === "individual" && currentUser.cnp) {
-      return readTaxpayerPersons().some((person) =>
-        person.institutionId === institutionId &&
-        person.cnp === currentUser.cnp &&
-        (person.status === "legat" || person.linkedUserId === currentUser.id)
-      );
-    }
-
-    if (currentUser.accountType === "company" && currentUser.cif) {
-      const cleanUserCif = currentUser.cif.replace(/^RO/i, "").trim();
-      return readTaxpayerCompanies().some((company) =>
-        company.institutionId === institutionId &&
-        company.cif.replace(/^RO/i, "").trim() === cleanUserCif &&
-        (company.status === "legat" || company.linkedUserId === currentUser.id)
-      );
-    }
-
-    return false;
+  function statusForInstitution(institutionId: string): "linked" | "requested" | "none" {
+    if (currentUser?.linkedInstitutionIds?.includes(institutionId)) return "linked";
+    if (currentUser?.requestedInstitutionIds?.includes(institutionId)) return "requested";
+    return "none";
   }
 
-  function requestInstitution(institution: PlatformInstitution) {
-    const existingContext = contexts.find((context) => context.id === institution.id);
+  async function requestInstitution(institution: RealInstitutionSummary) {
+    const status = statusForInstitution(institution.id);
 
-    if (existingContext?.enrollmentStatus === "active" || existingContext?.enrollmentStatus === undefined) {
+    if (status === "linked") {
       activateContext(institution.id);
       setIsPickerOpen(false);
       return;
     }
 
-    const confirmed = isAlreadyConfirmed(institution.id);
-    const nextContext: AccountContext = {
-      id: institution.id,
-      name: institution.name,
-      type: institution.type === "primarie" ? "city_hall" : "institution",
-      locality: institution.locality,
-      identifier: institution.type === "primarie" ? `UAT-${institution.locality.toUpperCase()}` : institution.cif,
-      enrollmentStatus: confirmed ? "active" : "pending",
-    };
+    if (status === "requested") {
+      toast.info(`Cererea catre ${institution.name} e deja inregistrata. Asteapta confirmarea institutiei.`);
+      setIsPickerOpen(false);
+      return;
+    }
 
-    const nextContexts = existingContext
-      ? contexts.map((context) => context.id === institution.id ? nextContext : context)
-      : [...contexts, nextContext];
+    setIsLinking(true);
 
-    setContexts(nextContexts);
-    writeAccountContexts(nextContexts);
-    setIsPickerOpen(false);
-    setInstitutionQuery("");
+    try {
+      const response = await apiFetch("/api/institutions/link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ institutionId: Number(institution.id) }),
+      });
+      const data = await response.json();
 
-    if (confirmed) {
-      setActiveId(institution.id);
-      writeActiveAccountContextId(institution.id);
-      toast.success(`${institution.name} a fost activata automat. Ai fost gasit in baza institutiei.`);
-    } else {
-      toast.info(`Cererea catre ${institution.name} a fost trimisa. Asteapta confirmarea institutiei.`);
+      if (!response.ok) {
+        throw new Error(data?.message ?? "Cererea nu a putut fi trimisa.");
+      }
+
+      const nextUser: StoredUser = { ...currentUser, ...data.user };
+
+      writeStoredUser(nextUser);
+      setCurrentUser(nextUser);
+
+      const nextContexts = syncContextsFromLinkedInstitutions(nextUser, institutions);
+      setContexts(nextContexts);
+      setIsPickerOpen(false);
+      setInstitutionQuery("");
+
+      if (data.status === "linked") {
+        setActiveId(institution.id);
+        writeActiveAccountContextId(institution.id);
+      }
+
+      toast[data.status === "linked" ? "success" : "info"](data.message);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Cererea nu a putut fi trimisa.");
+    } finally {
+      setIsLinking(false);
     }
   }
 
@@ -214,32 +243,37 @@ export function InstitutionsManager() {
             <button className="modal-close" type="button" aria-label="Inchide" onClick={() => setIsPickerOpen(false)}><X size={24} /></button>
             <div className="institution-picker-head">
               <p className="eyebrow">Institutii disponibile</p>
-              <h2 id="institution-picker-title">Alege primaria</h2>
-              <p>Cauta dupa denumire sau localitate. Confirmarea se face automat doar daca institutia te are deja in baza locala.</p>
+              <h2 id="institution-picker-title">Alege institutia</h2>
+              <p>Cauta dupa denumire sau localitate. Confirmarea se face automat doar daca institutia te are deja in evidenta ei (dupa CNP/CIF).</p>
             </div>
             <label className="institution-picker-search">
               <Search size={19} />
-              <input value={institutionQuery} onChange={(event) => setInstitutionQuery(event.target.value)} placeholder="Scrie numele primariei sau localitatea" autoFocus />
+              <input value={institutionQuery} onChange={(event) => setInstitutionQuery(event.target.value)} placeholder="Scrie numele institutiei sau localitatea" autoFocus />
             </label>
             <div className="institution-picker-list">
               {filteredInstitutions.map((institution) => {
-                const existingContext = contexts.find((context) => context.id === institution.id);
-                const confirmed = isAlreadyConfirmed(institution.id);
-                const isPending = existingContext?.enrollmentStatus === "pending";
+                const status = statusForInstitution(institution.id);
 
                 return (
-                  <button className="institution-picker-option" type="button" key={institution.id} onClick={() => requestInstitution(institution)}>
+                  <button
+                    className="institution-picker-option"
+                    type="button"
+                    key={institution.id}
+                    onClick={() => requestInstitution(institution)}
+                    disabled={isLinking}
+                  >
                     <Building2 size={20} />
                     <span>
                       <strong>{institution.name}</strong>
-                      <small>{institution.locality} · {institution.type === "primarie" ? "Primarie / UAT" : "Institutie"}</small>
+                      <small>{institution.locality}{institution.county ? ` · ${institution.county}` : ""}</small>
                     </span>
-                    <em className={confirmed ? "auto" : isPending ? "pending" : ""}>
-                      {confirmed ? "activare automata" : isPending ? "in asteptare" : "solicita acces"}
+                    <em className={status === "linked" ? "auto" : status === "requested" ? "pending" : ""}>
+                      {status === "linked" ? "legat" : status === "requested" ? "in asteptare" : "solicita acces"}
                     </em>
                   </button>
                 );
               })}
+              {filteredInstitutions.length === 0 && <p className="empty-state-inline">Nu am gasit institutii pentru cautarea curenta.</p>}
             </div>
           </div>
         </div>

@@ -45,7 +45,8 @@ type TaxpayerView = {
   identifier: string;
   locality: string;
   status: "legat" | "nelegat";
-  institutionId: string;
+  institutionId: number;
+  correspondenceId?: string | null;
   email?: string;
   phone?: string;
   address?: string;
@@ -434,7 +435,7 @@ function InstitutionDashboard({ user }: { user: StoredUser }) {
 
     const controller = new AbortController();
     const params = new URLSearchParams({
-      institutionId,
+      institutionId: institutionId,
       page: String(page),
       limit: "20",
       q: query,

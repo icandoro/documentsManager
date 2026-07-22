@@ -6,6 +6,7 @@ import { Building2, CheckCircle2, Database, IdCard, Landmark, MapPin, RefreshCw,
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { ROMANIA_COUNTIES, localityOptions } from "@/lib/romaniaLocalities";
+import { syncContextsFromLinkedInstitutions } from "@/lib/institutions";
 
 type AuthFormProps = {
   mode: "login" | "register" | "forgot";
@@ -27,9 +28,7 @@ type IdentityData = {
 };
 
 type PublicInstitution = {
-  id: string;
-  optionKey?: string;
-  databaseId?: number;
+  id: number;
   name: string;
   locality: string;
   county: string;
@@ -39,7 +38,7 @@ type PublicInstitution = {
 };
 
 function institutionOptionKey(institution: PublicInstitution) {
-  return institution.optionKey ?? `${institution.id}-${institution.databaseId ?? institution.email ?? institution.name}`;
+  return String(institution.id);
 }
 
 type OcrStatus = {
@@ -76,11 +75,29 @@ const demoAccounts = [
   { group: "Conturi demo utilizatori", email: "pf.demo@docmanager.local", password: "demo12345" },
   { group: "Conturi demo utilizatori", email: "pj.demo@docmanager.local", password: "demo12345" },
   { group: "Conturi demo utilizatori", email: "primaria.joita@docmanager.local", password: "demo12345" },
-  { group: "Conturi demo utilizatori", email: "primaria.pleasov@docmanager.local", password: "demo12345" },
 ];
 
 function apiUrl(endpoint: "login" | "register") {
   return `/api/auth/${endpoint}`;
+}
+
+async function syncSessionContexts(user: Record<string, unknown> | null | undefined) {
+  if (!user || user.accountType === "institution") return;
+
+  try {
+    const response = await fetch("/api/auth/institutions");
+    const data = await response.json();
+    const items: PublicInstitution[] = Array.isArray(data.items) ? data.items : [];
+
+    syncContextsFromLinkedInstitutions(user, items.map((institution) => ({
+      id: String(institution.id),
+      name: institution.name,
+      locality: institution.locality,
+      county: institution.county,
+    })));
+  } catch {
+    // Contextele se vor sincroniza oricum la urmatoarea vizita a paginii de institutii.
+  }
 }
 
 function mergeIdentityData(current: IdentityData, incoming: Partial<IdentityData>) {
@@ -216,7 +233,7 @@ export function AuthForm({ mode }: AuthFormProps) {
   const currentCounty = accountType === "company" ? companyData.county : identityData.county;
   const currentLocality = accountType === "company" ? companyData.locality : identityData.city;
   const selectedInstitution = institutionOptions.find((institution) => institutionOptionKey(institution) === selectedInstitutionOptionKey)
-    ?? institutionOptions.find((institution) => institution.id === selectedInstitutionIds[0])
+    ?? institutionOptions.find((institution) => String(institution.id) === selectedInstitutionIds[0])
     ?? null;
   const availableInstitutions = useMemo(() => {
     const search = institutionSearch.toLowerCase().trim();
@@ -296,7 +313,7 @@ export function AuthForm({ mode }: AuthFormProps) {
   }
 
   function toggleInstitutionSelection(institution: PublicInstitution) {
-    setSelectedInstitutionIds([institution.id]);
+    setSelectedInstitutionIds([String(institution.id)]);
     setSelectedInstitutionOptionKey(institutionOptionKey(institution));
     setInstitutionSearch(institution.name ?? "");
     setIsInstitutionPickerOpen(false);
@@ -337,6 +354,11 @@ export function AuthForm({ mode }: AuthFormProps) {
                 }}
                 onFocus={() => setIsInstitutionPickerOpen(true)}
                 placeholder="Introdu numele institutiei sau codul CIF..."
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                name="institution-search-no-autofill"
               />
               {selectedInstitution && <span className="institution-selected-mark">Selectata</span>}
             </label>
@@ -499,12 +521,31 @@ export function AuthForm({ mode }: AuthFormProps) {
     event.preventDefault();
     toast.dismiss();
 
+    const form = new FormData(event.currentTarget);
+
     if (mode === "forgot") {
-      showNotice("info", "Resetarea parolei va fi legata in pasul urmator.");
+      const forgotEmail = String(form.get("email") ?? "").toLowerCase().trim();
+
+      setIsSubmitting(true);
+
+      try {
+        const response = await fetch("/api/auth/forgot-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: forgotEmail }),
+        });
+        const data = await response.json().catch(() => ({}));
+
+        showNotice("success", data.message ?? "Daca adresa exista in platforma, am trimis instructiuni de resetare a parolei.");
+      } catch {
+        showNotice("error", "Nu pot contacta backend-ul. Verifica daca serviciile Docker sunt pornite.");
+      } finally {
+        setIsSubmitting(false);
+      }
+
       return;
     }
 
-    const form = new FormData(event.currentTarget);
     const endpoint = isRegister ? "register" : "login";
     const email = String(form.get("email") ?? "").toLowerCase().trim();
     const password = String(form.get("password") ?? "");
@@ -537,6 +578,12 @@ export function AuthForm({ mode }: AuthFormProps) {
 
       if (!response.ok) {
         showNotice("error", data.message ?? (isRegister ? "Contul nu a putut fi creat." : "Autentificarea nu a reusit."));
+
+        if (!isRegister && data.requiresEmailConfirmation) {
+          window.localStorage.setItem("docmanager_pending_registration", JSON.stringify({ email }));
+          setTimeout(() => router.push("/auth/check-email"), 500);
+        }
+
         return;
       }
 
@@ -573,6 +620,7 @@ export function AuthForm({ mode }: AuthFormProps) {
             window.localStorage.setItem("docmanager_user", JSON.stringify(loginData.user ?? {}));
             window.localStorage.setItem("docmanager_user_role", loginData.user?.role ?? "user");
             sessionUser = loginData.user ?? null;
+            void syncSessionContexts(sessionUser);
           }
         } catch {
           // Contul a fost creat; token-ul de sesiune se va obtine la login manual daca acest apel esueaza.
@@ -593,6 +641,7 @@ export function AuthForm({ mode }: AuthFormProps) {
         window.localStorage.setItem("docmanager_user", JSON.stringify(data.user ?? {}));
         window.localStorage.setItem("docmanager_user_role", data.user?.role ?? "user");
         window.localStorage.removeItem("docmanager_institution_onboarding");
+        void syncSessionContexts(data.user);
       }
 
       showNotice("success", isRegister ? "Contul a fost creat. Urmeaza confirmarea emailului." : "Autentificare reusita. Te duc in panoul de control.");
@@ -686,7 +735,7 @@ export function AuthForm({ mode }: AuthFormProps) {
               </div>
               {accountType === "individual" && (
                 <>
-                  <label>CNP<input name="cnp" value={identityData.cnp} onChange={(event) => updateIdentityField("cnp", event.target.value)} placeholder="13 cifre" /></label>
+                  <label>CNP<input name="cnp" value={identityData.cnp} onChange={(event) => updateIdentityField("cnp", event.target.value)} placeholder="13 cifre" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} /></label>
                   <div className="two-cols">
                     <label>Judet
                       <select value={identityData.county} onChange={(event) => {
@@ -719,7 +768,7 @@ export function AuthForm({ mode }: AuthFormProps) {
                   <div className={`company-lookup-card ${accountType === "company" ? "compact" : ""}`}>
                     <div className="lookup-icon"><Database size={22} /></div>
                     <label>CIF / CUI
-                      <input value={companyData.cif} onChange={(event) => updateCompanyField("cif", event.target.value)} placeholder="Ex: 48478795" />
+                      <input value={companyData.cif} onChange={(event) => updateCompanyField("cif", event.target.value)} placeholder="Ex: 48478795" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} />
                     </label>
                     <button className="primary-button lookup-action" type="button" onClick={lookupCompany} disabled={isLookingUpCompany}>
                       {isLookingUpCompany ? <RefreshCw size={18} className="spin-icon" /> : <Sparkles size={18} />}

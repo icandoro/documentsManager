@@ -22,9 +22,9 @@ final class InstitutionTaxpayerController
     #[Route('/api/institution-taxpayers', name: 'api_institution_taxpayers_list', methods: ['GET'])]
     public function list(Request $request, EntityManagerInterface $entityManager): JsonResponse
     {
-        $institutionId = trim((string) $request->query->get('institutionId', ''));
+        $institutionId = (int) $request->query->get('institutionId', 0);
 
-        if ($institutionId === '') {
+        if ($institutionId <= 0) {
             return $this->cors(new JsonResponse(['message' => 'Institutia curenta lipseste.'], 422));
         }
 
@@ -113,7 +113,7 @@ final class InstitutionTaxpayerController
         return $this->cors(new JsonResponse([
             'message' => 'Cetateanul a fost salvat in baza institutiei.',
             'item' => $this->serializeTaxpayer($result['item']),
-            'summary' => $this->summary($entityManager, (string) $payload['institutionId']),
+            'summary' => $this->summary($entityManager, (int) $payload['institutionId']),
         ], 201));
     }
 
@@ -128,6 +128,7 @@ final class InstitutionTaxpayerController
 
         $imported = 0;
         $skipped = 0;
+        $institutionId = (int) ($payload['institutionId'] ?? 0);
 
         foreach ($payload['records'] as $record) {
             if (!is_array($record)) {
@@ -137,7 +138,7 @@ final class InstitutionTaxpayerController
 
             $result = $this->createFromPayload([
                 ...$record,
-                'institutionId' => (string) ($payload['institutionId'] ?? $record['institutionId'] ?? ''),
+                'institutionId' => $institutionId,
             ], $entityManager);
 
             if (($result['status'] ?? null) === 'created') {
@@ -153,7 +154,7 @@ final class InstitutionTaxpayerController
             'message' => sprintf('Import finalizat: %d inregistrari adaugate%s.', $imported, $skipped > 0 ? sprintf(', %d duplicate sau invalide sarite', $skipped) : ''),
             'imported' => $imported,
             'skipped' => $skipped,
-            'summary' => $this->summary($entityManager, (string) ($payload['institutionId'] ?? '')),
+            'summary' => $this->summary($entityManager, $institutionId),
         ]));
     }
 
@@ -164,7 +165,7 @@ final class InstitutionTaxpayerController
      */
     private function createFromPayload(array $payload, EntityManagerInterface $entityManager): array
     {
-        $institutionId = trim((string) ($payload['institutionId'] ?? ''));
+        $institutionId = (int) ($payload['institutionId'] ?? 0);
         $type = ((string) ($payload['type'] ?? 'person')) === 'company' ? 'company' : 'person';
         $identifier = $this->normalizeIdentifier((string) ($payload['identifier'] ?? $payload['cnp'] ?? $payload['cif'] ?? $payload['cnp_cui'] ?? ''));
         $name = trim((string) ($payload['name'] ?? ''));
@@ -173,7 +174,7 @@ final class InstitutionTaxpayerController
             $name = trim(sprintf('%s %s', $payload['lastName'] ?? $payload['nume'] ?? '', $payload['firstName'] ?? $payload['prenume'] ?? ''));
         }
 
-        if ($institutionId === '' || $identifier === '' || $name === '') {
+        if ($institutionId <= 0 || $identifier === '' || $name === '') {
             return ['status' => 'invalid', 'message' => 'Institutia, numele si CNP/CUI sunt obligatorii.'];
         }
 
@@ -192,6 +193,7 @@ final class InstitutionTaxpayerController
 
         $taxpayer = (new InstitutionTaxpayer())
             ->setInstitutionId($institutionId)
+            ->setCorrespondenceId((string) ($payload['correspondenceId'] ?? $payload['idCorespondenta'] ?? ''))
             ->setType($type)
             ->setName($name)
             ->setIdentifier($identifier)
@@ -244,9 +246,9 @@ final class InstitutionTaxpayerController
     /**
      * @return array<string, int>
      */
-    private function summary(EntityManagerInterface $entityManager, string $institutionId): array
+    private function summary(EntityManagerInterface $entityManager, int $institutionId): array
     {
-        if ($institutionId === '') {
+        if ($institutionId <= 0) {
             return ['total' => 0, 'persons' => 0, 'companies' => 0, 'active' => 0];
         }
 
@@ -268,6 +270,7 @@ final class InstitutionTaxpayerController
         return [
             'id' => (string) $taxpayer->getId(),
             'institutionId' => $taxpayer->getInstitutionId(),
+            'correspondenceId' => $taxpayer->getCorrespondenceId(),
             'type' => $taxpayer->getType(),
             'name' => $taxpayer->getName(),
             'identifier' => $taxpayer->getIdentifier(),

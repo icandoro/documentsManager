@@ -107,6 +107,21 @@ spec:
             - name: DEFAULT_URI
               value: https://api.ghiseulcetateanului.ro
 
+            - name: FRONTEND_URL
+              value: https://ghiseulcetateanului.ro
+
+            - name: MAILER_FROM_ADDRESS
+              value: no-reply@ghiseulcetateanului.ro
+
+            - name: MAILER_FROM_NAME
+              value: Ghiseul Cetateanului
+
+            - name: MAILER_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: documents-manager-secrets
+                  key: MAILER_DSN
+
           readinessProbe:
             httpGet:
               path: /health

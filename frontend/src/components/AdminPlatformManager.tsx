@@ -89,7 +89,7 @@ type DirectoryUser = {
 };
 
 type DirectoryInstitutionOption = {
-  slug: string;
+  id: string;
   name: string;
 };
 
@@ -376,6 +376,26 @@ export function AdminPlatformManager({ section = "dashboard" }: { section?: Admi
     }
   }
 
+  async function deleteInstitution(id: number, label: string) {
+    if (!window.confirm(`Sigur vrei sa stergi institutia ${label}? Toate conturile ei de logare, documentele si cetatenii inrolati vor fi sterse definitiv.`)) {
+      return;
+    }
+
+    try {
+      const response = await apiFetch(`/api/platform-admin/institutions/${id}`, { method: "DELETE" });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data?.message ?? "Stergerea nu a reusit.");
+      }
+
+      toast.success(data.message ?? "Institutia a fost stearsa.");
+      await Promise.all([loadDirectoryUsers(), loadInstitutions()]);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Stergerea nu a reusit.");
+    }
+  }
+
   async function loadInstitutions() {
     try {
       const response = await apiFetch("/api/platform-admin/institutions");
@@ -387,25 +407,27 @@ export function AdminPlatformManager({ section = "dashboard" }: { section?: Admi
 
       const rows: Array<{
         id: number;
-        email: string;
+        email: string | null;
         name: string;
         cif: string | null;
+        locality: string | null;
+        county: string | null;
         status: string;
-        approval?: { updatedAt?: string } | null;
+        onboardingStatus: string | null;
         documents?: Record<string, unknown>;
+        staffCount: number;
       }> = data.institutions ?? [];
 
       const mapped: ApiInstitution[] = rows.map((row) => ({
         id: String(row.id),
         name: row.name,
-        locality: "-",
+        locality: row.locality ?? "-",
         cif: row.cif ?? "-",
         type: "institutie",
         status: row.status === "activ" ? "activa" : row.status === "suspendat" ? "dezactivata" : "in_verificare",
-        taxpayers: 0,
-        verificationStatus: row.approval ? "approved" : undefined,
-        lastDocumentReviewAt: row.approval?.updatedAt?.slice(0, 10),
-        email: row.email,
+        taxpayers: row.staffCount,
+        verificationStatus: row.onboardingStatus === "approved" ? "approved" : undefined,
+        email: row.email ?? "",
         documents: row.documents ?? {},
       }));
 
@@ -782,7 +804,7 @@ export function AdminPlatformManager({ section = "dashboard" }: { section?: Admi
                 <option value="all">Toate conturile</option>
                 <option value="independent">Independent</option>
                 {directoryInstitutions.map((institution) => (
-                  <option value={institution.slug} key={institution.slug}>{institution.name}</option>
+                  <option value={institution.id} key={institution.id}>{institution.name}</option>
                 ))}
               </select>
             </label>
@@ -921,7 +943,7 @@ export function AdminPlatformManager({ section = "dashboard" }: { section?: Admi
                     className="secondary-button danger-action"
                     type="button"
                     aria-label={`Sterge institutia ${institution.name}`}
-                    onClick={() => deletePlatformUser(Number(institution.id), institution.name)}
+                    onClick={() => deleteInstitution(Number(institution.id), institution.name)}
                   >
                     <Trash2 size={16} />
                   </button>

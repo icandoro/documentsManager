@@ -6,7 +6,7 @@ import { packageDocumentTitle, readReceivedPackages, readSentPackages, statusTon
 import { FileInput, FileOutput, FileText, Search, X } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-type StoredUser = Pick<PlatformUser, "id" | "name" | "email" | "accountType" | "linkedInstitutionIds">;
+type StoredUser = Pick<PlatformUser, "id" | "name" | "email" | "accountType" | "institutionId" | "linkedInstitutionIds">;
 
 type RegistryDocumentRow = {
   id: string;

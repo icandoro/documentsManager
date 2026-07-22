@@ -20,6 +20,7 @@ type StoredUser = {
   name: string;
   email: string;
   accountType: "individual" | "company" | "institution";
+  institutionId?: number | string | null;
   linkedInstitutionIds?: string[];
 };
 type ConstituentRow =
@@ -35,7 +36,8 @@ type TaxpayerSummary = {
 
 type TaxpayerApiItem = {
   id: string;
-  institutionId: string;
+  institutionId: number;
+  correspondenceId?: string | null;
   type: "person" | "company";
   name: string;
   identifier: string;
@@ -473,7 +475,7 @@ function apiItemToRow(item: TaxpayerApiItem): ConstituentRow {
     postalCode: "",
     latitude: "",
     longitude: "",
-    institutionId: item.institutionId,
+    institutionId: String(item.institutionId),
     status: item.status,
     linkedUserId: item.linkedUserId ? `user-${item.linkedUserId}` : null,
   };
@@ -593,7 +595,7 @@ export function InstitutionConstituentsManager() {
 
     const controller = new AbortController();
     const params = new URLSearchParams({
-      institutionId,
+      institutionId: institutionId,
       page: String(page),
       limit: String(pageSize),
       q: search,
@@ -714,7 +716,7 @@ export function InstitutionConstituentsManager() {
       body: JSON.stringify({
         ...personForm,
         type: "person",
-        institutionId,
+        institutionId: institutionId,
         name: `${personForm.lastName} ${personForm.firstName}`.trim(),
         identifier: personForm.cnp,
       }),
@@ -740,7 +742,7 @@ export function InstitutionConstituentsManager() {
       body: JSON.stringify({
         ...companyForm,
         type: "company",
-        institutionId,
+        institutionId: institutionId,
         name: companyForm.name,
         identifier: companyForm.cif,
       }),
@@ -797,7 +799,7 @@ export function InstitutionConstituentsManager() {
     const response = await apiFetch("/api/institution-taxpayers/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ institutionId, records: records.map(recordToApiPayload) }),
+      body: JSON.stringify({ institutionId: institutionId, records: records.map(recordToApiPayload) }),
     });
     const data = await response.json().catch(() => ({}));
 

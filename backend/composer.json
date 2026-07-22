@@ -20,7 +20,8 @@
     "symfony/validator": "^8.1",
     "symfony/yaml": "^8.1",
     "doctrine/doctrine-bundle": "^3.2",
-    "doctrine/doctrine-migrations-bundle": "^4.0"
+    "doctrine/doctrine-migrations-bundle": "^4.0",
+    "symfony/mailer": "^8.1"
   },
   "require-dev": {
     "symfony/maker-bundle": "^1.63"

@@ -2,6 +2,7 @@
 
 namespace App\Controller;
 
+use App\Entity\Institution;
 use App\Entity\Profile;
 use App\Entity\User;
 use Doctrine\ORM\EntityManagerInterface;
@@ -104,8 +105,11 @@ final class DocumentController
         }
 
         $profile = $user->getProfile();
+        $institution = $profile?->getInstitutionId() !== null
+            ? $entityManager->getRepository(Institution::class)->find($profile->getInstitutionId())
+            : null;
 
-        if (!$profile instanceof Profile || $profile->getPersonType() !== 'institution') {
+        if (!$profile instanceof Profile || !$institution instanceof Institution) {
             return $this->cors(new JsonResponse(['message' => 'Doar conturile de institutie pot incarca documente de inrolare.'], 403));
         }
 
@@ -161,10 +165,8 @@ final class DocumentController
             ];
         }
 
-        $optionalFields = $profile->getOptionalFields();
-        $optionalFields['onboardingDocuments'] = $onboardingDocuments;
-        $optionalFields['onboardingStatus'] = 'pending_admin_review';
-        $profile->setOptionalFields($optionalFields);
+        $institution->setOnboardingDocuments($onboardingDocuments);
+        $institution->setOnboardingStatus('pending_admin_review');
         $entityManager->flush();
 
         return $this->cors(new JsonResponse([

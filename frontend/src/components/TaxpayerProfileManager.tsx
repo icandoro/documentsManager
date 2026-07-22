@@ -9,6 +9,7 @@ import { resolveActiveContextIdForUser } from "@/lib/institutions";
 
 type StoredUser = {
   accountType?: string;
+  institutionId?: number | string | null;
   linkedInstitutionIds?: string[];
 };
 
@@ -103,7 +104,7 @@ export function TaxpayerProfileManager({ taxpayerId }: { taxpayerId: string }) {
       return;
     }
 
-    const params = new URLSearchParams({ institutionId, id: taxpayerId, limit: "1" });
+    const params = new URLSearchParams({ institutionId: institutionId, id: taxpayerId, limit: "1" });
 
     setLoading(true);
     apiFetch(`/api/institution-taxpayers?${params.toString()}`)

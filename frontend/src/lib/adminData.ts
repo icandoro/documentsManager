@@ -88,7 +88,9 @@ export type PlatformUser = {
     postalCode: string;
   };
   status: "activ" | "in_verificare" | "suspendat";
+  institutionId?: number | string | null;
   linkedInstitutionIds: string[];
+  requestedInstitutionIds?: string[];
   sentCount: number;
   receivedCount: number;
 };

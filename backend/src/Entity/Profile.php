@@ -41,6 +41,9 @@ class Profile
     #[ORM\Column(name: 'tax_identifier', length: 32, nullable: true)]
     private ?string $taxIdentifier = null;
 
+    #[ORM\Column(name: 'institution_id', type: 'integer', nullable: true, options: ['unsigned' => true])]
+    private ?int $institutionId = null;
+
     #[ORM\Column(name: 'optional_fields', type: 'json')]
     private array $optionalFields = [];
 
@@ -134,6 +137,18 @@ class Profile
     public function getTaxIdentifier(): ?string
     {
         return $this->taxIdentifier;
+    }
+
+    public function getInstitutionId(): ?int
+    {
+        return $this->institutionId;
+    }
+
+    public function setInstitutionId(?int $institutionId): self
+    {
+        $this->institutionId = $institutionId;
+
+        return $this;
     }
 
     public function setOptionalFields(array $optionalFields): self

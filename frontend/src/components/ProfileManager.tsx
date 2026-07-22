@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "@/lib/api";
 import { readAccountContexts, readActiveAccountContextId } from "@/lib/institutions";
 import {
   ContextProfileData,
@@ -12,7 +13,27 @@ import {
 import { ROMANIA_COUNTIES, localityOptions } from "@/lib/romaniaLocalities";
 import { Building2, KeyRound, LockKeyhole, MapPin, QrCode, ShieldCheck, Smartphone, UserRound } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
+import QRCode from "qrcode";
 import { toast } from "sonner";
+
+type StoredUser = { email?: string; twoFactorEnabled?: boolean };
+
+function readStoredUser(): StoredUser | null {
+  const saved = window.localStorage.getItem("docmanager_user");
+
+  if (!saved) return null;
+
+  try {
+    return JSON.parse(saved) as StoredUser;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredUser(patch: Partial<StoredUser>) {
+  const current = readStoredUser() ?? {};
+  window.localStorage.setItem("docmanager_user", JSON.stringify({ ...current, ...patch }));
+}
 
 export function ProfileManager() {
   const [generalProfile, setGeneralProfile] = useState<GeneralProfileData | null>(null);
@@ -21,8 +42,17 @@ export function ProfileManager() {
   const [activeContextName, setActiveContextName] = useState("Activitate independenta");
   const [activeContextLocality, setActiveContextLocality] = useState("Fara institutie");
 
+  const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
+  const [twoFactorStep, setTwoFactorStep] = useState<"idle" | "enrolling" | "disabling">("idle");
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [totpSecret, setTotpSecret] = useState("");
+  const [totpCode, setTotpCode] = useState("");
+  const [disablePassword, setDisablePassword] = useState("");
+  const [isTwoFactorBusy, setIsTwoFactorBusy] = useState(false);
+
   useEffect(() => {
     setGeneralProfile(readGeneralProfile());
+    setTwoFactorEnabled(Boolean(readStoredUser()?.twoFactorEnabled));
 
     function syncProfileContext() {
       const contexts = readAccountContexts();
@@ -44,6 +74,96 @@ export function ProfileManager() {
       window.removeEventListener("docmanager-account-context-change", syncProfileContext);
     };
   }, []);
+
+  async function startTwoFactorEnrollment() {
+    setIsTwoFactorBusy(true);
+
+    try {
+      const response = await apiFetch("/api/auth/two-factor/setup", { method: "POST" });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        toast.error(data.message ?? "Nu am putut genera secretul 2FA.");
+        return;
+      }
+
+      const dataUrl = await QRCode.toDataURL(data.otpauthUrl);
+
+      setTotpSecret(data.secret);
+      setQrDataUrl(dataUrl);
+      setTwoFactorStep("enrolling");
+    } catch {
+      toast.error("Nu pot contacta backend-ul. Verifica daca serviciile Docker sunt pornite.");
+    } finally {
+      setIsTwoFactorBusy(false);
+    }
+  }
+
+  async function confirmTwoFactorEnrollment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsTwoFactorBusy(true);
+
+    try {
+      const response = await apiFetch("/api/auth/two-factor/enable", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: totpCode }),
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        toast.error(data.message ?? "Codul introdus nu este valid.");
+        return;
+      }
+
+      writeStoredUser({ twoFactorEnabled: true });
+      setTwoFactorEnabled(true);
+      setTwoFactorStep("idle");
+      setQrDataUrl(null);
+      setTotpCode("");
+      toast.success(data.message ?? "Autentificarea in doi pasi a fost activata.");
+    } catch {
+      toast.error("Nu pot contacta backend-ul. Verifica daca serviciile Docker sunt pornite.");
+    } finally {
+      setIsTwoFactorBusy(false);
+    }
+  }
+
+  async function confirmTwoFactorDisable(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsTwoFactorBusy(true);
+
+    try {
+      const response = await apiFetch("/api/auth/two-factor/disable", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: disablePassword }),
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        toast.error(data.message ?? "Parola introdusa este incorecta.");
+        return;
+      }
+
+      writeStoredUser({ twoFactorEnabled: false });
+      setTwoFactorEnabled(false);
+      setTwoFactorStep("idle");
+      setDisablePassword("");
+      toast.success(data.message ?? "Autentificarea in doi pasi a fost dezactivata.");
+    } catch {
+      toast.error("Nu pot contacta backend-ul. Verifica daca serviciile Docker sunt pornite.");
+    } finally {
+      setIsTwoFactorBusy(false);
+    }
+  }
+
+  function cancelTwoFactorFlow() {
+    setTwoFactorStep("idle");
+    setQrDataUrl(null);
+    setTotpCode("");
+    setDisablePassword("");
+  }
 
   if (!generalProfile || !contextProfile) {
     return null;
@@ -183,17 +303,56 @@ export function ProfileManager() {
           <div className="security-row"><LockKeyhole size={18} /> Parola configurata</div>
           <div className="security-row"><ShieldCheck size={18} /> 2FA recomandat</div>
 
-          <div className="two-factor-setup-card">
-            <p className="eyebrow">Pregatit pentru activare</p>
-            <h3>Autentificare in doi pasi</h3>
-            <div className="two-factor-setup-steps">
-              <span><QrCode size={18} /> Secret TOTP si QR</span>
-              <span><Smartphone size={18} /> Aplicatie Authenticator</span>
-              <span><KeyRound size={18} /> Cod in pas separat la login</span>
+          {twoFactorStep === "idle" && (
+            <div className="two-factor-setup-card">
+              <p className="eyebrow">{twoFactorEnabled ? "Activata" : "Dezactivata"}</p>
+              <h3>Autentificare in doi pasi</h3>
+              <div className="two-factor-setup-steps">
+                <span><QrCode size={18} /> Secret TOTP si QR</span>
+                <span><Smartphone size={18} /> Aplicatie Authenticator</span>
+                <span><KeyRound size={18} /> Cod in pas separat la login</span>
+              </div>
+              <p>{twoFactorEnabled ? "Contul tau cere un cod din aplicatia de autentificare la fiecare login." : "Activeaza 2FA pentru un plus de securitate la autentificare."}</p>
             </div>
-            <p>Fluxul este implementat, dar ramane dezactivat pana cand decidem sa permitem activarea conturilor.</p>
-          </div>
-          <button className="secondary-button" type="button" disabled>Activare 2FA indisponibila momentan</button>
+          )}
+
+          {twoFactorStep === "idle" && (
+            twoFactorEnabled ? (
+              <button className="secondary-button" type="button" onClick={() => setTwoFactorStep("disabling")}>Dezactiveaza 2FA</button>
+            ) : (
+              <button className="secondary-button" type="button" onClick={startTwoFactorEnrollment} disabled={isTwoFactorBusy}>
+                {isTwoFactorBusy ? "Se genereaza..." : "Activare 2FA"}
+              </button>
+            )
+          )}
+
+          {twoFactorStep === "enrolling" && (
+            <form className="two-factor-setup-card" onSubmit={confirmTwoFactorEnrollment}>
+              <p className="eyebrow">Pasul 1</p>
+              <h3>Scaneaza codul QR</h3>
+              <p>Foloseste o aplicatie de autentificare (Google Authenticator, Authy etc.) pentru a scana codul, apoi introdu codul generat.</p>
+              {qrDataUrl && <img src={qrDataUrl} alt="Cod QR pentru activare 2FA" style={{ width: 180, height: 180, alignSelf: "center" }} />}
+              <p className="muted">Cod manual: <code>{totpSecret}</code></p>
+              <label>Cod din aplicatie<input value={totpCode} onChange={(event) => setTotpCode(event.target.value)} placeholder="6 cifre" inputMode="numeric" maxLength={6} required /></label>
+              <div className="two-cols">
+                <button className="primary-button" type="submit" disabled={isTwoFactorBusy}>{isTwoFactorBusy ? "Se verifica..." : "Confirma activarea"}</button>
+                <button className="secondary-button" type="button" onClick={cancelTwoFactorFlow}>Renunta</button>
+              </div>
+            </form>
+          )}
+
+          {twoFactorStep === "disabling" && (
+            <form className="two-factor-setup-card" onSubmit={confirmTwoFactorDisable}>
+              <p className="eyebrow">Confirmare</p>
+              <h3>Dezactiveaza 2FA</h3>
+              <p>Introdu parola contului pentru a confirma dezactivarea autentificarii in doi pasi.</p>
+              <label>Parola<input type="password" value={disablePassword} onChange={(event) => setDisablePassword(event.target.value)} required /></label>
+              <div className="two-cols">
+                <button className="primary-button" type="submit" disabled={isTwoFactorBusy}>{isTwoFactorBusy ? "Se dezactiveaza..." : "Confirma dezactivarea"}</button>
+                <button className="secondary-button" type="button" onClick={cancelTwoFactorFlow}>Renunta</button>
+              </div>
+            </form>
+          )}
         </aside>
       </section>
     </>

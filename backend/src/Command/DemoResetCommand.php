@@ -2,6 +2,8 @@
 
 namespace App\Command;
 
+use App\Entity\Institution;
+use App\Entity\InstitutionTaxpayer;
 use App\Entity\Profile;
 use App\Entity\User;
 use Doctrine\DBAL\Connection;
@@ -29,14 +31,30 @@ final class DemoResetCommand extends Command
         $io = new SymfonyStyle($input, $output);
 
         $this->connection->executeStatement('SET FOREIGN_KEY_CHECKS=0');
-        foreach (['document_package_items', 'document_packages', 'documents', 'institution_taxpayers', 'profiles', 'users'] as $table) {
+        foreach (['document_package_items', 'document_packages', 'documents', 'institution_taxpayers', 'profiles', 'users', 'institutions'] as $table) {
             if ($this->tableExists($table)) {
                 $this->connection->executeStatement(sprintf('TRUNCATE TABLE %s', $table));
             }
         }
         $this->connection->executeStatement('SET FOREIGN_KEY_CHECKS=1');
 
-        foreach ($this->demoAccounts() as $account) {
+        $institution = (new Institution())
+            ->setName('Primaria Joita')
+            ->setCif('12345678')
+            ->setLocality('Joita')
+            ->setCounty('Giurgiu')
+            ->setAddress('Strada Primariei nr. 1, Joita, Giurgiu')
+            ->setPhone('+40 246 000 100')
+            ->setContactEmail('primaria.joita@docmanager.local')
+            ->setStatus('activ')
+            ->setOnboardingStatus('approved')
+            ->setOnboardingDocuments(['approvalDocuments' => ['cerere_inrolare.pdf', 'delegatie_reprezentant.pdf']]);
+        $this->entityManager->persist($institution);
+        $this->entityManager->flush();
+
+        $users = [];
+
+        foreach ($this->demoAccounts() as $key => $account) {
             $user = new User(null, $account['email'], '', $account['roles'], $account['accountCode']);
             $user->setPassword($this->passwordHasher->hashPassword($user, $account['password']));
 
@@ -49,14 +67,64 @@ final class DemoResetCommand extends Command
                 ->setTaxIdentifier($account['taxIdentifier'])
                 ->setOptionalFields($account['optionalFields']);
 
+            if ($account['personType'] === 'institution') {
+                $profile->setInstitutionId($institution->getId());
+            }
+
             $user->setProfile($profile);
             $this->entityManager->persist($user);
             $this->entityManager->persist($profile);
+            $users[$key] = $user;
         }
 
         $this->entityManager->flush();
 
-        $io->success('Demo database was reset. Created only the 5 login demo accounts. Citizens, documents and package flows were removed.');
+        // Now that every demo account has a real id, link the citizens to the
+        // institution for real: set linkedInstitutionIds on their profiles and
+        // create the matching institution_taxpayers roster rows, so the
+        // institution actually sees them in its own citizen list.
+        $institutionId = (int) $institution->getId();
+
+        foreach (['superadmin', 'individual', 'company'] as $key) {
+            $profile = $users[$key]->getProfile();
+            $optionalFields = $profile->getOptionalFields();
+            $optionalFields['linkedInstitutionIds'] = [(string) $institutionId];
+            $profile->setOptionalFields($optionalFields);
+        }
+
+        $individualProfile = $users['individual']->getProfile();
+        $taxpayerPerson = (new InstitutionTaxpayer())
+            ->setInstitutionId($institutionId)
+            ->setType('person')
+            ->setName(trim($individualProfile->getLastName().' '.$individualProfile->getFirstName()))
+            ->setIdentifier((string) $individualProfile->getOptionalFields()['cnp'])
+            ->setLocality((string) $individualProfile->getOptionalFields()['address']['city'])
+            ->setEmail($users['individual']->getEmail())
+            ->setPhone((string) $individualProfile->getOptionalFields()['phone'])
+            ->setAccountKind('resident')
+            ->setLinkedUserId($users['individual']->getId())
+            ->setStatus('legat')
+            ->setDetails([]);
+        $this->entityManager->persist($taxpayerPerson);
+
+        $companyProfile = $users['company']->getProfile();
+        $taxpayerCompany = (new InstitutionTaxpayer())
+            ->setInstitutionId($institutionId)
+            ->setType('company')
+            ->setName((string) $companyProfile->getCompanyName())
+            ->setIdentifier((string) $companyProfile->getTaxIdentifier())
+            ->setLocality((string) $companyProfile->getOptionalFields()['address']['city'])
+            ->setEmail($users['company']->getEmail())
+            ->setPhone((string) $companyProfile->getOptionalFields()['phone'])
+            ->setAccountKind('company_hq')
+            ->setLinkedUserId($users['company']->getId())
+            ->setStatus('legat')
+            ->setDetails([]);
+        $this->entityManager->persist($taxpayerCompany);
+
+        $this->entityManager->flush();
+
+        $io->success('Demo database was reset. Created the 4 login demo accounts (superadmin, persoana fizica, persoana juridica, institutie), linked and enrolled in the institution roster. Documents and package flows were removed.');
 
         return Command::SUCCESS;
     }
@@ -67,12 +135,12 @@ final class DemoResetCommand extends Command
     }
 
     /**
-     * @return array<int, array<string, mixed>>
+     * @return array<string, array<string, mixed>>
      */
     private function demoAccounts(): array
     {
         return [
-            [
+            'superadmin' => [
                 'email' => 'superadmin@docmanager.local',
                 'password' => 'superadmin123',
                 'roles' => ['ROLE_SUPER_ADMIN'],
@@ -94,11 +162,11 @@ final class DemoResetCommand extends Command
                         'sector' => '1',
                         'postalCode' => '010101',
                     ],
-                    'linkedInstitutionIds' => ['primaria-joita', 'primaria-pleasov'],
+                    'linkedInstitutionIds' => [],
                     'onboardingStatus' => 'approved',
                 ],
             ],
-            [
+            'individual' => [
                 'email' => 'pf.demo@docmanager.local',
                 'password' => 'demo12345',
                 'roles' => ['ROLE_USER'],
@@ -125,11 +193,11 @@ final class DemoResetCommand extends Command
                         'county' => 'Giurgiu',
                         'postalCode' => '087150',
                     ],
-                    'linkedInstitutionIds' => ['primaria-joita', 'primaria-pleasov'],
+                    'linkedInstitutionIds' => [],
                     'onboardingStatus' => 'approved',
                 ],
             ],
-            [
+            'company' => [
                 'email' => 'pj.demo@docmanager.local',
                 'password' => 'demo12345',
                 'roles' => ['ROLE_USER'],
@@ -156,11 +224,11 @@ final class DemoResetCommand extends Command
                         'county' => 'Giurgiu',
                         'postalCode' => '087150',
                     ],
-                    'linkedInstitutionIds' => ['primaria-joita'],
+                    'linkedInstitutionIds' => [],
                     'onboardingStatus' => 'approved',
                 ],
             ],
-            [
+            'institution' => [
                 'email' => 'primaria.joita@docmanager.local',
                 'password' => 'demo12345',
                 'roles' => ['ROLE_USER'],
@@ -173,55 +241,8 @@ final class DemoResetCommand extends Command
                 'optionalFields' => [
                     'status' => 'activ',
                     'phone' => '+40 246 000 100',
-                    'company' => [
-                        'cif' => '12345678',
-                        'name' => 'Primaria Joita',
-                        'registrationNumber' => '',
-                        'address' => 'Strada Primariei nr. 1, Joita, Giurgiu',
-                        'source' => 'seed-account',
-                    ],
-                    'address' => [
-                        'street' => 'Strada Primariei',
-                        'number' => '1',
-                        'city' => 'Joita',
-                        'county' => 'Giurgiu',
-                        'postalCode' => '087150',
-                    ],
-                    'linkedInstitutionIds' => ['primaria-joita'],
+                    'linkedInstitutionIds' => [],
                     'onboardingStatus' => 'approved',
-                    'approvalDocuments' => ['cerere_inrolare.pdf', 'delegatie_reprezentant.pdf'],
-                ],
-            ],
-            [
-                'email' => 'primaria.pleasov@docmanager.local',
-                'password' => 'demo12345',
-                'roles' => ['ROLE_USER'],
-                'accountCode' => 'DM-INS-02',
-                'firstName' => '',
-                'lastName' => '',
-                'personType' => 'institution',
-                'companyName' => 'Primaria Pleasov',
-                'taxIdentifier' => '87654321',
-                'optionalFields' => [
-                    'status' => 'activ',
-                    'phone' => '+40 246 000 200',
-                    'company' => [
-                        'cif' => '87654321',
-                        'name' => 'Primaria Pleasov',
-                        'registrationNumber' => '',
-                        'address' => 'Strada Primariei nr. 2, Pleasov, Olt',
-                        'source' => 'seed-account',
-                    ],
-                    'address' => [
-                        'street' => 'Strada Primariei',
-                        'number' => '2',
-                        'city' => 'Pleasov',
-                        'county' => 'Olt',
-                        'postalCode' => '237000',
-                    ],
-                    'linkedInstitutionIds' => ['primaria-pleasov'],
-                    'onboardingStatus' => 'approved',
-                    'approvalDocuments' => ['cerere_inrolare.pdf', 'delegatie_reprezentant.pdf'],
                 ],
             ],
         ];

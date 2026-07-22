@@ -68,6 +68,7 @@ type StoredUser = {
   email?: string;
   role?: string;
   accountType?: "individual" | "company" | "institution";
+  institutionId?: number | string | null;
   linkedInstitutionIds?: string[];
   avatarUrl?: string;
   accountCode?: string;

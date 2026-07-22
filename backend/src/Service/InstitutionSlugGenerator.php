@@ -2,6 +2,13 @@
 
 namespace App\Service;
 
+/**
+ * No longer used by any controller (institutions are identified by
+ * institutions.id since the institution/user split). Kept only because
+ * migrations/Version20260722120000.php and Version20260722130000.php
+ * instantiate it directly to replay their one-time slug backfill on fresh
+ * environments - do not delete.
+ */
 final class InstitutionSlugGenerator
 {
     public function fromNameAndCif(string $name, string $cif = ''): string

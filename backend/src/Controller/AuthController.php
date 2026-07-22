@@ -2,13 +2,16 @@
 
 namespace App\Controller;
 
+use App\Entity\Institution;
 use App\Entity\Profile;
 use App\Entity\User;
+use App\Service\AppMailer;
 use App\Service\ClientCodeGenerator;
-use App\Service\InstitutionSlugGenerator;
 use App\Service\PublicCompanyLookupService;
+use Doctrine\DBAL\ArrayParameterType;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\PasswordHasher\Hasher\PasswordHasherFactoryInterface;
@@ -31,7 +34,25 @@ final class AuthController
     }
 
     #[Route('/api/auth/two-factor/verify', name: 'api_auth_two_factor_verify_options', methods: ['OPTIONS'])]
+    #[Route('/api/auth/two-factor/setup', name: 'api_auth_two_factor_setup_options', methods: ['OPTIONS'])]
+    #[Route('/api/auth/two-factor/enable', name: 'api_auth_two_factor_enable_options', methods: ['OPTIONS'])]
+    #[Route('/api/auth/two-factor/disable', name: 'api_auth_two_factor_disable_options', methods: ['OPTIONS'])]
     public function twoFactorVerifyOptions(): JsonResponse
+    {
+        return $this->cors(new JsonResponse(null, 204));
+    }
+
+    #[Route('/api/institutions/link', name: 'api_institutions_link_options', methods: ['OPTIONS'])]
+    public function linkInstitutionOptions(): JsonResponse
+    {
+        return $this->cors(new JsonResponse(null, 204));
+    }
+
+    #[Route('/api/auth/email/confirm', name: 'api_auth_email_confirm_options', methods: ['OPTIONS'])]
+    #[Route('/api/auth/email/resend', name: 'api_auth_email_resend_options', methods: ['OPTIONS'])]
+    #[Route('/api/auth/forgot-password', name: 'api_auth_forgot_password_options', methods: ['OPTIONS'])]
+    #[Route('/api/auth/reset-password', name: 'api_auth_reset_password_options', methods: ['OPTIONS'])]
+    public function accountRecoveryOptions(): JsonResponse
     {
         return $this->cors(new JsonResponse(null, 204));
     }
@@ -62,6 +83,16 @@ final class AuthController
 
         if (!$passwordHasher->verify($user->getPassword(), $password)) {
             return $this->cors(new JsonResponse(['message' => 'Email sau parola incorecte.'], 401));
+        }
+
+        $optionalFields = $user->getProfile()?->getOptionalFields() ?? [];
+        $emailConfirmationStatus = $optionalFields['emailConfirmationStatus'] ?? 'confirmed';
+
+        if ($emailConfirmationStatus !== 'confirmed') {
+            return $this->cors(new JsonResponse([
+                'message' => 'Confirma adresa de email inainte de a te autentifica. Verifica-ti inbox-ul.',
+                'requiresEmailConfirmation' => true,
+            ], 403));
         }
 
         if ($user->isTwoFactorEnabled()) {
@@ -125,8 +156,8 @@ final class AuthController
         EntityManagerInterface $entityManager,
         UserPasswordHasherInterface $passwordHasher,
         PublicCompanyLookupService $companyLookup,
-        InstitutionSlugGenerator $slugGenerator,
         ClientCodeGenerator $clientCodeGenerator,
+        AppMailer $appMailer,
     ): JsonResponse {
         $payload = json_decode($request->getContent(), true);
 
@@ -189,10 +220,6 @@ final class AuthController
             ? $this->normalizeIdentifier((string) ($company['cif'] ?? ''))
             : $this->normalizeIdentifier((string) ($personalData['cnp'] ?? ''));
         $profileAddress = $this->profileAddress($accountType, $personalData, $company);
-        $institutionId = $accountType === 'institution'
-            ? $slugGenerator->fromNameAndCif((string) ($company['name'] ?? ''), (string) ($company['cif'] ?? ''))
-            : null;
-        $initialLinkedInstitutionIds = $institutionId !== null ? [$institutionId] : [];
 
         $profile = (new Profile())
             ->setUser($user)
@@ -214,9 +241,8 @@ final class AuthController
                 'phone' => (string) ($payload['phone'] ?? $company['phone'] ?? ''),
                 'address' => $profileAddress,
                 'selectedInstitutionIds' => $selectedInstitutionIds,
-                'linkedInstitutionIds' => $initialLinkedInstitutionIds,
+                'linkedInstitutionIds' => [],
                 'emailConfirmationStatus' => 'pending',
-                'onboardingDocuments' => [],
                 'onboardingStatus' => $accountType === 'institution' ? 'awaiting_email_confirmation' : 'email_pending',
             ]);
         $user->setProfile($profile);
@@ -225,6 +251,24 @@ final class AuthController
             $entityManager->persist($user);
             $entityManager->persist($profile);
             $entityManager->flush();
+
+            if ($accountType === 'institution') {
+                $institution = (new Institution())
+                    ->setName((string) ($company['name'] ?? ''))
+                    ->setCif((string) ($company['cif'] ?? ''))
+                    ->setLocality((string) ($profileAddress['city'] ?? ''))
+                    ->setCounty((string) ($profileAddress['county'] ?? ''))
+                    ->setAddress((string) ($company['address'] ?? ''))
+                    ->setPhone((string) ($payload['phone'] ?? $company['phone'] ?? ''))
+                    ->setContactEmail($email)
+                    ->setStatus('in_verificare')
+                    ->setOnboardingStatus('awaiting_email_confirmation');
+                $entityManager->persist($institution);
+                $entityManager->flush();
+
+                $profile->setInstitutionId($institution->getId());
+                $entityManager->flush();
+            }
 
             if (in_array($accountType, ['individual', 'company'], true) && $identifier !== '') {
                 $linkResult = $this->linkAccountToInstitutionTaxpayers($entityManager, $user, $accountType, $identifier, $selectedInstitutionIds);
@@ -238,6 +282,10 @@ final class AuthController
             return $this->cors(new JsonResponse(['message' => 'Exista deja un cont cu acest email.'], 409));
         }
 
+        $name = trim(sprintf('%s %s', $firstName, $lastName)) ?: (string) ($company['name'] ?? $email);
+        $confirmUrl = rtrim($_ENV['FRONTEND_URL'] ?? 'http://localhost:3000', '/').'/auth/confirm-email?token='.urlencode($this->createEmailConfirmationToken($user));
+        $appMailer->sendEmailConfirmation($email, $name, $confirmUrl);
+
         return $this->cors(new JsonResponse([
             'message' => 'Contul a fost creat. Confirma adresa de email pentru pasul urmator.',
             'requiresEmailConfirmation' => true,
@@ -249,40 +297,299 @@ final class AuthController
     }
 
     #[Route('/api/auth/institutions', name: 'api_auth_institutions_list', methods: ['GET'])]
-    public function institutions(EntityManagerInterface $entityManager, InstitutionSlugGenerator $slugGenerator): JsonResponse
+    public function institutions(EntityManagerInterface $entityManager): JsonResponse
     {
         $rows = $entityManager->getConnection()->fetchAllAssociative(
-            "SELECT u.id AS user_id, u.email, p.company_name, p.tax_identifier, p.optional_fields
-             FROM profiles p
-             INNER JOIN users u ON u.id = p.user_id
-             WHERE p.person_type = 'institution'
-             ORDER BY p.company_name ASC, u.email ASC"
+            'SELECT id, name, cif, locality, county, contact_email, status
+             FROM institutions
+             ORDER BY name ASC'
         );
 
-        $items = array_map(function (array $row) use ($slugGenerator): array {
-            $optionalFields = json_decode((string) ($row['optional_fields'] ?? '{}'), true);
-            $optionalFields = is_array($optionalFields) ? $optionalFields : [];
-            $company = is_array($optionalFields['company'] ?? null) ? $optionalFields['company'] : [];
-            $name = trim((string) ($row['company_name'] ?? $company['name'] ?? ''));
-            $locality = $this->extractInstitutionLocality($name, $optionalFields);
-            $county = $this->extractInstitutionCounty($optionalFields);
-            $id = $slugGenerator->fromNameAndCif($name !== '' ? $name : (string) ($row['email'] ?? ''), (string) ($row['tax_identifier'] ?? ''));
-            $userId = (int) ($row['user_id'] ?? 0);
-
-            return [
-                'id' => $id,
-                'optionKey' => sprintf('institution-%d-%s', $userId, $id),
-                'databaseId' => $userId,
-                'name' => $name !== '' ? $name : (string) ($row['email'] ?? ''),
-                'locality' => $locality,
-                'county' => $county,
-                'cif' => (string) ($row['tax_identifier'] ?? $company['cif'] ?? ''),
-                'email' => (string) ($row['email'] ?? ''),
-                'status' => (string) ($optionalFields['status'] ?? 'activ'),
-            ];
-        }, $rows);
+        $items = array_map(static fn (array $row): array => [
+            'id' => (int) $row['id'],
+            'name' => (string) $row['name'],
+            'locality' => (string) ($row['locality'] ?? ''),
+            'county' => (string) ($row['county'] ?? ''),
+            'cif' => (string) $row['cif'],
+            'email' => (string) ($row['contact_email'] ?? ''),
+            'status' => (string) $row['status'],
+        ], $rows);
 
         return $this->cors(new JsonResponse(['items' => $items]));
+    }
+
+    #[Route('/api/institutions/link', name: 'api_institutions_link', methods: ['POST'])]
+    public function linkInstitution(
+        Request $request,
+        EntityManagerInterface $entityManager,
+        Security $security,
+        ClientCodeGenerator $clientCodeGenerator,
+    ): JsonResponse {
+        $user = $security->getUser();
+
+        if (!$user instanceof User) {
+            return $this->cors(new JsonResponse(['message' => 'Autentificare necesara.'], 401));
+        }
+
+        $profile = $user->getProfile();
+        $personType = $profile?->getPersonType();
+
+        if (!$profile instanceof Profile || !in_array($personType, ['individual', 'company'], true)) {
+            return $this->cors(new JsonResponse(['message' => 'Doar conturile de persoana fizica sau juridica se pot inrola la o institutie.'], 403));
+        }
+
+        $payload = json_decode($request->getContent(), true);
+        $institutionId = (int) (is_array($payload) ? ($payload['institutionId'] ?? 0) : 0);
+
+        if ($institutionId <= 0) {
+            return $this->cors(new JsonResponse(['message' => 'Institutia este obligatorie.'], 422));
+        }
+
+        $identifier = $personType === 'company'
+            ? $this->normalizeIdentifier((string) $profile->getTaxIdentifier())
+            : $this->normalizeIdentifier((string) ($profile->getOptionalFields()['cnp'] ?? ''));
+
+        if ($identifier === '') {
+            return $this->cors(new JsonResponse(['message' => 'Completeaza mai intai CNP-ul sau CIF-ul in profil, apoi incearca din nou.'], 422));
+        }
+
+        $linkResult = $this->linkAccountToInstitutionTaxpayers($entityManager, $user, $personType, $identifier, [(string) $institutionId]);
+
+        $optionalFields = $profile->getOptionalFields();
+        $existingLinked = array_values(array_filter(
+            is_array($optionalFields['linkedInstitutionIds'] ?? null) ? $optionalFields['linkedInstitutionIds'] : []
+        ));
+        $existingRequested = array_values(array_filter(
+            is_array($optionalFields['requestedInstitutionIds'] ?? null) ? $optionalFields['requestedInstitutionIds'] : []
+        ));
+
+        $linkedInstitutionIds = array_values(array_unique([...$existingLinked, ...$linkResult['linkedInstitutionIds']]));
+        $requestedInstitutionIds = array_values(array_diff(
+            array_unique([...$existingRequested, ...$linkResult['requestedInstitutionIds']]),
+            $linkedInstitutionIds
+        ));
+
+        $optionalFields['linkedInstitutionIds'] = $linkedInstitutionIds;
+        $optionalFields['requestedInstitutionIds'] = $requestedInstitutionIds;
+        $profile->setOptionalFields($optionalFields);
+        $entityManager->flush();
+
+        $isLinked = in_array((string) $institutionId, $linkedInstitutionIds, true);
+
+        return $this->cors(new JsonResponse([
+            'message' => $isLinked
+                ? 'Ai fost gasit in evidenta institutiei. Contul a fost legat automat.'
+                : 'Cererea a fost inregistrata. Institutia trebuie sa te adauge in evidenta ei pentru activare.',
+            'status' => $isLinked ? 'linked' : 'requested',
+            'user' => $this->serializeUser($user, $clientCodeGenerator),
+        ]));
+    }
+
+    #[Route('/api/auth/email/confirm', name: 'api_auth_email_confirm', methods: ['POST'])]
+    public function confirmEmail(Request $request, EntityManagerInterface $entityManager): JsonResponse
+    {
+        $payload = json_decode($request->getContent(), true);
+        $token = (string) (is_array($payload) ? ($payload['token'] ?? '') : '');
+        $decoded = $this->decodeSignedToken($token);
+
+        if (!is_array($decoded) || ($decoded['purpose'] ?? null) !== 'email-confirm' || (int) ($decoded['expiresAt'] ?? 0) < time()) {
+            return $this->cors(new JsonResponse(['message' => 'Linkul de confirmare este invalid sau a expirat.'], 410));
+        }
+
+        $email = strtolower(trim((string) ($decoded['email'] ?? '')));
+        $user = $entityManager->getRepository(User::class)->findOneBy(['email' => $email]);
+
+        if (!$user instanceof User) {
+            return $this->cors(new JsonResponse(['message' => 'Contul nu a fost gasit.'], 404));
+        }
+
+        $profile = $user->getProfile();
+
+        if ($profile instanceof Profile) {
+            $optionalFields = $profile->getOptionalFields();
+            $optionalFields['emailConfirmationStatus'] = 'confirmed';
+            $profile->setOptionalFields($optionalFields);
+            $entityManager->flush();
+        }
+
+        return $this->cors(new JsonResponse([
+            'message' => 'Adresa de email a fost confirmata. Te poti autentifica acum.',
+            'accountType' => $profile?->getPersonType() ?? 'individual',
+        ]));
+    }
+
+    #[Route('/api/auth/email/resend', name: 'api_auth_email_resend', methods: ['POST'])]
+    public function resendEmailConfirmation(Request $request, EntityManagerInterface $entityManager, AppMailer $appMailer): JsonResponse
+    {
+        $payload = json_decode($request->getContent(), true);
+        $email = strtolower(trim((string) (is_array($payload) ? ($payload['email'] ?? '') : '')));
+        $generic = new JsonResponse(['message' => 'Daca adresa de email exista si nu este inca confirmata, am retrimis linkul de confirmare.']);
+
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            return $this->cors($generic);
+        }
+
+        $user = $entityManager->getRepository(User::class)->findOneBy(['email' => $email]);
+
+        if (!$user instanceof User) {
+            return $this->cors($generic);
+        }
+
+        $profile = $user->getProfile();
+        $optionalFields = $profile?->getOptionalFields() ?? [];
+
+        if (($optionalFields['emailConfirmationStatus'] ?? 'confirmed') === 'confirmed') {
+            return $this->cors($generic);
+        }
+
+        $name = trim(sprintf('%s %s', $profile?->getLastName() ?? '', $profile?->getFirstName() ?? '')) ?: $email;
+        $confirmUrl = rtrim($_ENV['FRONTEND_URL'] ?? 'http://localhost:3000', '/').'/auth/confirm-email?token='.urlencode($this->createEmailConfirmationToken($user));
+        $appMailer->sendEmailConfirmation($email, $name, $confirmUrl);
+
+        return $this->cors($generic);
+    }
+
+    #[Route('/api/auth/forgot-password', name: 'api_auth_forgot_password', methods: ['POST'])]
+    public function forgotPassword(Request $request, EntityManagerInterface $entityManager, AppMailer $appMailer): JsonResponse
+    {
+        $payload = json_decode($request->getContent(), true);
+        $email = strtolower(trim((string) (is_array($payload) ? ($payload['email'] ?? '') : '')));
+        $generic = new JsonResponse(['message' => 'Daca adresa de email exista in platforma, am trimis instructiuni de resetare a parolei.']);
+
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            return $this->cors($generic);
+        }
+
+        $user = $entityManager->getRepository(User::class)->findOneBy(['email' => $email]);
+
+        if (!$user instanceof User) {
+            return $this->cors($generic);
+        }
+
+        $profile = $user->getProfile();
+        $name = trim(sprintf('%s %s', $profile?->getLastName() ?? '', $profile?->getFirstName() ?? '')) ?: $email;
+        $resetUrl = rtrim($_ENV['FRONTEND_URL'] ?? 'http://localhost:3000', '/').'/auth/reset-password?token='.urlencode($this->createPasswordResetToken($user));
+        $appMailer->sendPasswordReset($email, $name, $resetUrl);
+
+        return $this->cors($generic);
+    }
+
+    #[Route('/api/auth/reset-password', name: 'api_auth_reset_password', methods: ['POST'])]
+    public function resetPassword(Request $request, EntityManagerInterface $entityManager, UserPasswordHasherInterface $passwordHasher): JsonResponse
+    {
+        $payload = json_decode($request->getContent(), true);
+        $token = (string) (is_array($payload) ? ($payload['token'] ?? '') : '');
+        $password = (string) (is_array($payload) ? ($payload['password'] ?? '') : '');
+        $decoded = $this->decodeSignedToken($token);
+
+        if (!is_array($decoded) || ($decoded['purpose'] ?? null) !== 'password-reset' || (int) ($decoded['expiresAt'] ?? 0) < time()) {
+            return $this->cors(new JsonResponse(['message' => 'Linkul de resetare este invalid sau a expirat.'], 410));
+        }
+
+        if (strlen($password) < 8) {
+            return $this->cors(new JsonResponse(['message' => 'Parola trebuie sa aiba cel putin 8 caractere.'], 422));
+        }
+
+        $email = strtolower(trim((string) ($decoded['email'] ?? '')));
+        $user = $entityManager->getRepository(User::class)->findOneBy(['email' => $email]);
+
+        if (!$user instanceof User) {
+            return $this->cors(new JsonResponse(['message' => 'Contul nu a fost gasit.'], 404));
+        }
+
+        $user->setPassword($passwordHasher->hashPassword($user, $password));
+        $entityManager->flush();
+
+        return $this->cors(new JsonResponse(['message' => 'Parola a fost schimbata. Te poti autentifica cu noua parola.']));
+    }
+
+    #[Route('/api/auth/two-factor/setup', name: 'api_auth_two_factor_setup', methods: ['POST'])]
+    public function setupTwoFactor(Security $security, EntityManagerInterface $entityManager): JsonResponse
+    {
+        $user = $security->getUser();
+
+        if (!$user instanceof User) {
+            return $this->cors(new JsonResponse(['message' => 'Autentificare necesara.'], 401));
+        }
+
+        $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+        $secret = '';
+
+        for ($i = 0; $i < 32; $i++) {
+            $secret .= $alphabet[random_int(0, strlen($alphabet) - 1)];
+        }
+
+        $user->setTotpSecret($secret);
+        $entityManager->flush();
+
+        $issuer = 'GhiseulCetateanului';
+        $otpauthUrl = sprintf(
+            'otpauth://totp/%s:%s?secret=%s&issuer=%s&algorithm=SHA1&digits=6&period=30',
+            rawurlencode($issuer),
+            rawurlencode($user->getEmail()),
+            $secret,
+            rawurlencode($issuer),
+        );
+
+        return $this->cors(new JsonResponse([
+            'secret' => $secret,
+            'otpauthUrl' => $otpauthUrl,
+        ]));
+    }
+
+    #[Route('/api/auth/two-factor/enable', name: 'api_auth_two_factor_enable', methods: ['POST'])]
+    public function enableTwoFactor(Request $request, Security $security, EntityManagerInterface $entityManager): JsonResponse
+    {
+        $user = $security->getUser();
+
+        if (!$user instanceof User) {
+            return $this->cors(new JsonResponse(['message' => 'Autentificare necesara.'], 401));
+        }
+
+        $payload = json_decode($request->getContent(), true);
+        $code = preg_replace('/\D+/', '', (string) (is_array($payload) ? ($payload['code'] ?? '') : '')) ?? '';
+        $secret = $user->getTotpSecret();
+
+        if (!$secret) {
+            return $this->cors(new JsonResponse(['message' => 'Genereaza mai intai un secret 2FA.'], 422));
+        }
+
+        if (!$this->verifyTotp($secret, $code)) {
+            return $this->cors(new JsonResponse(['message' => 'Codul introdus nu este valid.'], 422));
+        }
+
+        $user->setTwoFactorEnabled(true);
+        $entityManager->flush();
+
+        return $this->cors(new JsonResponse(['message' => 'Autentificarea in doi pasi a fost activata.']));
+    }
+
+    #[Route('/api/auth/two-factor/disable', name: 'api_auth_two_factor_disable', methods: ['POST'])]
+    public function disableTwoFactor(
+        Request $request,
+        Security $security,
+        EntityManagerInterface $entityManager,
+        PasswordHasherFactoryInterface $passwordHasherFactory,
+    ): JsonResponse {
+        $user = $security->getUser();
+
+        if (!$user instanceof User) {
+            return $this->cors(new JsonResponse(['message' => 'Autentificare necesara.'], 401));
+        }
+
+        $payload = json_decode($request->getContent(), true);
+        $password = (string) (is_array($payload) ? ($payload['password'] ?? '') : '');
+        $passwordHasher = $passwordHasherFactory->getPasswordHasher($user);
+
+        if (!$passwordHasher->verify($user->getPassword(), $password)) {
+            return $this->cors(new JsonResponse(['message' => 'Parola introdusa este incorecta.'], 401));
+        }
+
+        $user->setTwoFactorEnabled(false);
+        $user->setTotpSecret(null);
+        $entityManager->flush();
+
+        return $this->cors(new JsonResponse(['message' => 'Autentificarea in doi pasi a fost dezactivata.']));
     }
 
     /**
@@ -325,7 +632,10 @@ final class AuthController
             'phone' => $optionalFields['phone'] ?? $profile?->getPhone(),
             'address' => $optionalFields['address'] ?? null,
             'status' => $optionalFields['status'] ?? 'activ',
+            'institutionId' => $profile?->getInstitutionId(),
+            'twoFactorEnabled' => $user->isTwoFactorEnabled(),
             'linkedInstitutionIds' => $optionalFields['linkedInstitutionIds'] ?? [],
+            'requestedInstitutionIds' => $optionalFields['requestedInstitutionIds'] ?? [],
             'onboardingStatus' => $optionalFields['onboardingStatus'] ?? null,
             'sentCount' => 0,
             'receivedCount' => 0,
@@ -413,10 +723,18 @@ final class AuthController
         string $identifier,
         array $selectedInstitutionIds,
     ): array {
+        if ($selectedInstitutionIds === []) {
+            return ['linkedInstitutionIds' => [], 'requestedInstitutionIds' => []];
+        }
+
         $taxpayerType = $accountType === 'company' ? 'company' : 'person';
-        $rows = $entityManager->getConnection()->fetchAllAssociative(
-            'SELECT id, institution_id FROM institution_taxpayers WHERE type = :type AND identifier = :identifier',
-            ['type' => $taxpayerType, 'identifier' => $identifier],
+        $institutionIds = array_values(array_unique(array_map('intval', $selectedInstitutionIds)));
+        $connection = $entityManager->getConnection();
+        $rows = $connection->fetchAllAssociative(
+            'SELECT id, institution_id FROM institution_taxpayers
+             WHERE type = :type AND identifier = :identifier AND institution_id IN (:institutionIds)',
+            ['type' => $taxpayerType, 'identifier' => $identifier, 'institutionIds' => $institutionIds],
+            ['institutionIds' => ArrayParameterType::INTEGER],
         );
 
         $linkedInstitutionIds = [];
@@ -428,7 +746,7 @@ final class AuthController
                 continue;
             }
 
-            $entityManager->getConnection()->executeStatement(
+            $connection->executeStatement(
                 'UPDATE institution_taxpayers SET linked_user_id = :userId, status = :status WHERE id = :id',
                 ['userId' => $user->getId(), 'status' => 'legat', 'id' => (int) $row['id']],
             );
@@ -444,37 +762,6 @@ final class AuthController
         ];
     }
 
-    /**
-     * @param array<string, mixed> $optionalFields
-     */
-    private function extractInstitutionLocality(string $name, array $optionalFields): string
-    {
-        $address = is_array($optionalFields['address'] ?? null) ? $optionalFields['address'] : [];
-        $company = is_array($optionalFields['company'] ?? null) ? $optionalFields['company'] : [];
-        $locality = trim((string) ($address['city'] ?? $company['locality'] ?? ''));
-
-        if ($locality !== '') {
-            return $locality;
-        }
-
-        if (preg_match('/primaria\s+(.+)/i', $name, $matches)) {
-            return trim($matches[1]);
-        }
-
-        return '';
-    }
-
-    /**
-     * @param array<string, mixed> $optionalFields
-     */
-    private function extractInstitutionCounty(array $optionalFields): string
-    {
-        $address = is_array($optionalFields['address'] ?? null) ? $optionalFields['address'] : [];
-        $company = is_array($optionalFields['company'] ?? null) ? $optionalFields['company'] : [];
-
-        return trim((string) ($address['county'] ?? $company['county'] ?? ''));
-    }
-
     private function cors(JsonResponse $response): JsonResponse
     {
         $response->headers->set('Access-Control-Allow-Origin', 'http://localhost:13000');
@@ -484,53 +771,84 @@ final class AuthController
         return $response;
     }
 
-    private function createToken(User $user): string
+    /**
+     * @param array<string, mixed> $claims
+     */
+    private function createSignedToken(array $claims): string
     {
-        $payload = [
-            'email' => $user->getEmail(),
-            'accountCode' => $user->getAccountCode(),
-            'expiresAt' => time() + 3600,
-        ];
-        $encodedPayload = rtrim(strtr(base64_encode(json_encode($payload, JSON_THROW_ON_ERROR)), '+/', '-_'), '=');
+        $encodedPayload = rtrim(strtr(base64_encode(json_encode($claims, JSON_THROW_ON_ERROR)), '+/', '-_'), '=');
         $signature = hash_hmac('sha256', $encodedPayload, $_ENV['APP_SECRET'] ?? 'dev-secret');
 
         return $encodedPayload.'.'.$signature;
     }
 
-    private function createTwoFactorChallenge(User $user): string
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function decodeSignedToken(string $token): ?array
     {
-        $payload = [
-            'email' => $user->getEmail(),
-            'expiresAt' => time() + 300,
-            'purpose' => 'two-factor-login',
-        ];
-        $encodedPayload = rtrim(strtr(base64_encode(json_encode($payload, JSON_THROW_ON_ERROR)), '+/', '-_'), '=');
-        $signature = hash_hmac('sha256', $encodedPayload, $_ENV['APP_SECRET'] ?? 'dev-secret');
-
-        return $encodedPayload.'.'.$signature;
-    }
-
-    private function isValidTwoFactorChallenge(string $challengeToken, User $user): bool
-    {
-        [$encodedPayload, $signature] = array_pad(explode('.', $challengeToken, 2), 2, '');
+        [$encodedPayload, $signature] = array_pad(explode('.', $token, 2), 2, '');
 
         if ($encodedPayload === '' || $signature === '') {
-            return false;
+            return null;
         }
 
         $expectedSignature = hash_hmac('sha256', $encodedPayload, $_ENV['APP_SECRET'] ?? 'dev-secret');
 
         if (!hash_equals($expectedSignature, $signature)) {
-            return false;
+            return null;
         }
 
         $paddedPayload = str_pad(strtr($encodedPayload, '-_', '+/'), (int) ceil(strlen($encodedPayload) / 4) * 4, '=', STR_PAD_RIGHT);
         $decoded = json_decode(base64_decode($paddedPayload) ?: '', true);
 
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    private function createToken(User $user): string
+    {
+        return $this->createSignedToken([
+            'email' => $user->getEmail(),
+            'accountCode' => $user->getAccountCode(),
+            'expiresAt' => time() + 3600,
+        ]);
+    }
+
+    private function createTwoFactorChallenge(User $user): string
+    {
+        return $this->createSignedToken([
+            'email' => $user->getEmail(),
+            'expiresAt' => time() + 300,
+            'purpose' => 'two-factor-login',
+        ]);
+    }
+
+    private function isValidTwoFactorChallenge(string $challengeToken, User $user): bool
+    {
+        $decoded = $this->decodeSignedToken($challengeToken);
+
         return is_array($decoded)
             && ($decoded['purpose'] ?? null) === 'two-factor-login'
             && ($decoded['email'] ?? null) === $user->getEmail()
             && (int) ($decoded['expiresAt'] ?? 0) >= time();
+    }
+
+    private function createEmailConfirmationToken(User $user): string
+    {
+        return $this->createSignedToken([
+            'email' => $user->getEmail(),
+            'purpose' => 'email-confirm',
+            'expiresAt' => time() + 86400,
+        ]);
+    }
+
+    private function createPasswordResetToken(User $user): string
+    {
+        return $this->createSignedToken([
+            'email' => $user->getEmail(),
+            'purpose' => 'password-reset',
+            'expiresAt' => time() + 1800,
+        ]);
     }
 
     private function verifyTotp(string $secret, string $code): bool

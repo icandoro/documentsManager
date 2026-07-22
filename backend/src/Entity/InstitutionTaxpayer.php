@@ -14,8 +14,11 @@ class InstitutionTaxpayer
     #[ORM\Column(type: 'integer', options: ['unsigned' => true])]
     private ?int $id = null;
 
-    #[ORM\Column(name: 'institution_id', length: 64)]
-    private string $institutionId = '';
+    #[ORM\Column(name: 'institution_id', type: 'integer', options: ['unsigned' => true])]
+    private int $institutionId = 0;
+
+    #[ORM\Column(name: 'correspondence_id', length: 64, nullable: true)]
+    private ?string $correspondenceId = null;
 
     #[ORM\Column(length: 16)]
     private string $type = 'person';
@@ -63,14 +66,27 @@ class InstitutionTaxpayer
         return $this->id;
     }
 
-    public function getInstitutionId(): string
+    public function getInstitutionId(): int
     {
         return $this->institutionId;
     }
 
-    public function setInstitutionId(string $institutionId): self
+    public function setInstitutionId(int $institutionId): self
     {
-        $this->institutionId = trim($institutionId);
+        $this->institutionId = $institutionId;
+
+        return $this;
+    }
+
+    public function getCorrespondenceId(): ?string
+    {
+        return $this->correspondenceId;
+    }
+
+    public function setCorrespondenceId(?string $correspondenceId): self
+    {
+        $correspondenceId = trim((string) $correspondenceId);
+        $this->correspondenceId = $correspondenceId !== '' ? $correspondenceId : null;
 
         return $this;
     }
