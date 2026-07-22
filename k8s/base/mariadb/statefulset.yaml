@@ -1,0 +1,115 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mariadb
+spec:
+  serviceName: mariadb
+  replicas: 1
+  revisionHistoryLimit: 10
+
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+
+  selector:
+    matchLabels:
+      app: mariadb
+
+  updateStrategy:
+    type: RollingUpdate
+
+  template:
+    metadata:
+      labels:
+        app: mariadb
+
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: vmi3013973
+
+      containers:
+        - name: mariadb
+          image: mariadb:11.4
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: mysql
+              containerPort: 3306
+              protocol: TCP
+
+          env:
+            - name: MARIADB_DATABASE
+              value: documents_manager
+
+            - name: MARIADB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: documents-manager-secrets
+                  key: MARIADB_USER
+
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: documents-manager-secrets
+                  key: MARIADB_PASSWORD
+
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: documents-manager-secrets
+                  key: MARIADB_ROOT_PASSWORD
+
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - healthcheck.sh --connect --innodb_initialized
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - healthcheck.sh --connect --innodb_initialized
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - healthcheck.sh --connect --innodb_initialized
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+
+            limits:
+              cpu: "1"
+              memory: 1Gi
+
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 20Gi
