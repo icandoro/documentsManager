@@ -58,6 +58,7 @@ WORKDIR /var/www/backend
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 COPY --from=vendor /app /var/www/backend
+COPY docker/php/uploads.ini /usr/local/etc/php/conf.d/uploads.ini
 
 RUN mkdir -p var/cache var/log \
     && chown -R www-data:www-data var
