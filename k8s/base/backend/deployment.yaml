@@ -1,0 +1,135 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+spec:
+  replicas: 1
+  revisionHistoryLimit: 10
+
+  selector:
+    matchLabels:
+      app: backend
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+
+  template:
+    metadata:
+      labels:
+        app: backend
+
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: vmi3013973
+
+      imagePullSecrets:
+        - name: ghcr-secret
+
+      initContainers:
+        - name: wait-for-mariadb
+          image: mariadb:11.4
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - sh
+            - -c
+            - |
+              until mariadb-admin ping \
+                -h mariadb \
+                -u"$MARIADB_USER" \
+                -p"$MARIADB_PASSWORD" \
+                --silent;
+              do
+                echo "Astept MariaDB...";
+                sleep 5;
+              done
+
+          env:
+            - name: MARIADB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: documents-manager-secrets
+                  key: MARIADB_USER
+
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: documents-manager-secrets
+                  key: MARIADB_PASSWORD
+
+      containers:
+        - name: backend
+          image: ghcr.io/icandoro/documentsmanager-backend:latest
+          imagePullPolicy: Always
+
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+
+          env:
+            - name: APP_ENV
+              value: prod
+
+            - name: APP_DEBUG
+              value: "0"
+
+            - name: APP_RUNTIME_OPTIONS
+              value: '{"disable_dotenv":true}'
+
+            - name: APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: documents-manager-secrets
+                  key: APP_SECRET
+
+            - name: MARIADB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: documents-manager-secrets
+                  key: MARIADB_USER
+
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: documents-manager-secrets
+                  key: MARIADB_PASSWORD
+
+            - name: DATABASE_URL
+              value: mysql://$(MARIADB_USER):$(MARIADB_PASSWORD)@mariadb:3306/documents_manager?serverVersion=mariadb-11.4.5&charset=utf8mb4
+
+            - name: CORS_ALLOW_ORIGIN
+              value: ^https://(www\.)?ghiseulcetateanului\.ro$
+
+            - name: DEFAULT_URI
+              value: https://api.ghiseulcetateanului.ro
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 1
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 1
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+
+            limits:
+              cpu: "1"
+              memory: 768Mi
