@@ -47,6 +47,22 @@ final class AppMailer
         );
     }
 
+    public function sendPasswordChanged(string $toEmail, string $toName): bool
+    {
+        return $this->send(
+            $toEmail,
+            $toName,
+            'Parola a fost schimbata - Ghiseul Cetateanului',
+            <<<TEXT
+                Buna, {$toName}!
+
+                Te informam ca parola contului tau a fost schimbata recent.
+
+                Daca tu ai facut aceasta schimbare, poti ignora acest mesaj. Daca nu recunosti aceasta actiune, te rugam sa ne contactezi cat mai curand posibil.
+                TEXT,
+        );
+    }
+
     private function send(string $toEmail, string $toName, string $subject, string $textBody): bool
     {
         $fromAddress = $_ENV['MAILER_FROM_ADDRESS'] ?? 'no-reply@ghiseulcetateanului.ro';

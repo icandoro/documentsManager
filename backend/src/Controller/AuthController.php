@@ -11,6 +11,7 @@ use App\Service\PublicCompanyLookupService;
 use Doctrine\DBAL\ArrayParameterType;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
+use Psr\Cache\CacheItemPoolInterface;
 use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -450,7 +451,7 @@ final class AuthController
     }
 
     #[Route('/api/auth/forgot-password', name: 'api_auth_forgot_password', methods: ['POST'])]
-    public function forgotPassword(Request $request, EntityManagerInterface $entityManager, AppMailer $appMailer): JsonResponse
+    public function forgotPassword(Request $request, EntityManagerInterface $entityManager, AppMailer $appMailer, CacheItemPoolInterface $cache): JsonResponse
     {
         $payload = json_decode($request->getContent(), true);
         $email = strtolower(trim((string) (is_array($payload) ? ($payload['email'] ?? '') : '')));
@@ -459,6 +460,15 @@ final class AuthController
         if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
             return $this->cors($generic);
         }
+
+        $rateLimitItem = $cache->getItem('password_reset_throttle_'.hash('sha256', $email));
+
+        if ($rateLimitItem->isHit()) {
+            return $this->cors($generic);
+        }
+
+        $rateLimitItem->set(true)->expiresAfter(60);
+        $cache->save($rateLimitItem);
 
         $user = $entityManager->getRepository(User::class)->findOneBy(['email' => $email]);
 
@@ -475,7 +485,7 @@ final class AuthController
     }
 
     #[Route('/api/auth/reset-password', name: 'api_auth_reset_password', methods: ['POST'])]
-    public function resetPassword(Request $request, EntityManagerInterface $entityManager, UserPasswordHasherInterface $passwordHasher): JsonResponse
+    public function resetPassword(Request $request, EntityManagerInterface $entityManager, UserPasswordHasherInterface $passwordHasher, AppMailer $appMailer): JsonResponse
     {
         $payload = json_decode($request->getContent(), true);
         $token = (string) (is_array($payload) ? ($payload['token'] ?? '') : '');
@@ -497,8 +507,16 @@ final class AuthController
             return $this->cors(new JsonResponse(['message' => 'Contul nu a fost gasit.'], 404));
         }
 
+        if (!hash_equals($this->passwordFingerprint($user), (string) ($decoded['pwFingerprint'] ?? ''))) {
+            return $this->cors(new JsonResponse(['message' => 'Linkul de resetare este invalid sau a expirat.'], 410));
+        }
+
         $user->setPassword($passwordHasher->hashPassword($user, $password));
         $entityManager->flush();
+
+        $profile = $user->getProfile();
+        $name = trim(sprintf('%s %s', $profile?->getLastName() ?? '', $profile?->getFirstName() ?? '')) ?: $email;
+        $appMailer->sendPasswordChanged($email, $name);
 
         return $this->cors(new JsonResponse(['message' => 'Parola a fost schimbata. Te poti autentifica cu noua parola.']));
     }
@@ -848,7 +866,13 @@ final class AuthController
             'email' => $user->getEmail(),
             'purpose' => 'password-reset',
             'expiresAt' => time() + 1800,
+            'pwFingerprint' => $this->passwordFingerprint($user),
         ]);
+    }
+
+    private function passwordFingerprint(User $user): string
+    {
+        return hash_hmac('sha256', $user->getPassword(), $_ENV['APP_SECRET'] ?? 'dev-secret');
     }
 
     private function verifyTotp(string $secret, string $code): bool
