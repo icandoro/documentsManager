@@ -1,10 +1,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: frontend
+  name: backend
   namespace: ghiseul-cetateanului
   labels:
-    app: frontend
+    app: backend
 
 spec:
   replicas: 2
@@ -12,7 +12,7 @@ spec:
 
   selector:
     matchLabels:
-      app: frontend
+      app: backend
 
   strategy:
     type: RollingUpdate
@@ -23,7 +23,7 @@ spec:
   template:
     metadata:
       labels:
-        app: frontend
+        app: backend
 
     spec:
       affinity:
@@ -34,32 +34,142 @@ spec:
                   - key: app
                     operator: In
                     values:
-                      - frontend
+                      - backend
               topologyKey: kubernetes.io/hostname
 
       imagePullSecrets:
         - name: ghcr-secret
 
+      initContainers:
+        - name: wait-for-mariadb-galera
+          image: mariadb:11.4
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - sh
+            - -c
+            - |
+              until mariadb-admin ping \
+                --host="$MARIADB_HOST" \
+                --port="$MARIADB_PORT" \
+                --user="$MARIADB_USER" \
+                --password="$MARIADB_PASSWORD" \
+                --silent;
+              do
+                echo "Astept clusterul MariaDB Galera...";
+                sleep 5;
+              done
+
+              echo "MariaDB Galera este disponibila."
+
+          env:
+            - name: MARIADB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-galera-secret
+                  key: host
+
+            - name: MARIADB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-galera-secret
+                  key: port
+
+            - name: MARIADB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-galera-secret
+                  key: app-user
+
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-galera-secret
+                  key: app-password
+
       containers:
-        - name: frontend
-          image: ghcr.io/icandoro/documentsmanager-frontend:latest
+        - name: backend
+          image: ghcr.io/icandoro/documentsmanager-backend:latest
           imagePullPolicy: Always
 
           ports:
             - name: http
-              containerPort: 3000
+              containerPort: 8000
               protocol: TCP
 
           env:
-            - name: NODE_ENV
-              value: "production"
+            - name: APP_ENV
+              value: "prod"
 
-            - name: NEXT_PUBLIC_API_URL
+            - name: APP_DEBUG
+              value: "0"
+
+            - name: APP_RUNTIME_OPTIONS
+              value: '{"disable_dotenv":true}'
+
+            - name: APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: documents-manager-secrets
+                  key: APP_SECRET
+
+            - name: MARIADB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-galera-secret
+                  key: host
+
+            - name: MARIADB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-galera-secret
+                  key: port
+
+            - name: MARIADB_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-galera-secret
+                  key: database
+
+            - name: MARIADB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-galera-secret
+                  key: app-user
+
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-galera-secret
+                  key: app-password
+
+            - name: DATABASE_URL
+              value: "mysql://$(MARIADB_USER):$(MARIADB_PASSWORD)@$(MARIADB_HOST):$(MARIADB_PORT)/$(MARIADB_DATABASE)?serverVersion=mariadb-11.4.5&charset=utf8mb4"
+
+            - name: CORS_ALLOW_ORIGIN
+              value: '^https://(www\.)?ghiseulcetateanului\.ro$'
+
+            - name: DEFAULT_URI
               value: "https://ghiseulcetateanului.ro/api"
+
+            - name: FRONTEND_URL
+              value: "https://ghiseulcetateanului.ro"
+
+            - name: MAILER_FROM_ADDRESS
+              value: "no-reply@ghiseulcetateanului.ro"
+
+            - name: MAILER_FROM_NAME
+              value: "Ghiseul Cetateanului"
+
+            - name: MAILER_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: documents-manager-secrets
+                  key: MAILER_DSN
 
           readinessProbe:
             httpGet:
-              path: /
+              path: /health
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10
@@ -69,7 +179,7 @@ spec:
 
           livenessProbe:
             httpGet:
-              path: /
+              path: /health
               port: http
             initialDelaySeconds: 30
             periodSeconds: 20
