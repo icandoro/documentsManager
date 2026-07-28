@@ -70,13 +70,6 @@ const accountCards = [
   },
 ];
 
-const demoAccounts = [
-  { group: "Cont demo administrare", email: "superadmin@docmanager.local", password: "superadmin123" },
-  { group: "Conturi demo utilizatori", email: "pf.demo@docmanager.local", password: "demo12345" },
-  { group: "Conturi demo utilizatori", email: "pj.demo@docmanager.local", password: "demo12345" },
-  { group: "Conturi demo utilizatori", email: "primaria.joita@docmanager.local", password: "demo12345" },
-];
-
 function apiUrl(endpoint: "login" | "register") {
   return `/api/auth/${endpoint}`;
 }
@@ -305,11 +298,6 @@ export function AuthForm({ mode }: AuthFormProps) {
 
   function updateIdentityField(field: keyof IdentityData, value: string) {
     setIdentityData((current) => ({ ...current, [field]: value }));
-  }
-
-  function fillDemoCredentials(email: string, password: string) {
-    setLoginCredentials({ email, password });
-    showNotice("info", `Am completat datele pentru ${email}.`);
   }
 
   function toggleInstitutionSelection(institution: PublicInstitution) {
@@ -814,24 +802,6 @@ export function AuthForm({ mode }: AuthFormProps) {
           <button className="primary-button" type="submit" disabled={isSubmitting}>
             {isSubmitting ? "Se trimite..." : isLogin ? "Intra in cont" : isRegister ? "Creeaza cont" : "Trimite link resetare"}
           </button>
-          {isLogin && (
-            <div className="demo-accounts">
-              <strong>Cont demo administrare</strong>
-              {demoAccounts.filter((account) => account.group === "Cont demo administrare").map((account) => (
-                <button type="button" key={account.email} onClick={() => fillDemoCredentials(account.email, account.password)}>
-                  <span>{account.email}</span>
-                  <em>{account.password}</em>
-                </button>
-              ))}
-              <strong>Conturi demo utilizatori</strong>
-              {demoAccounts.filter((account) => account.group === "Conturi demo utilizatori").map((account) => (
-                <button type="button" key={account.email} onClick={() => fillDemoCredentials(account.email, account.password)}>
-                  <span>{account.email}</span>
-                  <em>{account.password}</em>
-                </button>
-              ))}
-            </div>
-          )}
         </form>}
         <div className="auth-links">
           {!isLogin && <Link href="/auth/login">Am deja cont</Link>}

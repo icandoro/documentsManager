@@ -30,6 +30,12 @@ final class DemoResetCommand extends Command
     {
         $io = new SymfonyStyle($input, $output);
 
+        if (($_ENV['APP_ENV'] ?? 'dev') === 'prod') {
+            $io->error('Aceasta comanda nu poate rula in productie (APP_ENV=prod): sterge toate datele reale (utilizatori, institutii, documente, pachete), nu doar conturile demo.');
+
+            return Command::FAILURE;
+        }
+
         $this->connection->executeStatement('SET FOREIGN_KEY_CHECKS=0');
         foreach (['document_package_items', 'document_packages', 'documents', 'institution_taxpayers', 'profiles', 'users', 'institutions'] as $table) {
             if ($this->tableExists($table)) {
