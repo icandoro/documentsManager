@@ -4,7 +4,7 @@ metadata:
   name: mariadb
 spec:
   serviceName: mariadb
-  replicas: 2
+  replicas: 1
   revisionHistoryLimit: 10
 
   persistentVolumeClaimRetentionPolicy:
