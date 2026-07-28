@@ -53,10 +53,16 @@ spec:
 
           env:
             - name: MARIADB_HOST
-              value: "mariadb-galera-primary"
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-galera-secret
+                  key: host
 
             - name: MARIADB_PORT
-              value: "3306"
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-galera-secret
+                  key: port
 
             - name: MARIADB_USER
               valueFrom:
@@ -97,10 +103,22 @@ spec:
                   key: APP_SECRET
 
             - name: MARIADB_HOST
-              value: "mariadb-galera-primary"
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-galera-secret
+                  key: host
 
             - name: MARIADB_PORT
-              value: "3306"
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-galera-secret
+                  key: port
+
+            - name: MARIADB_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-galera-secret
+                  key: database
 
             - name: MARIADB_USER
               valueFrom:
@@ -113,12 +131,6 @@ spec:
                 secretKeyRef:
                   name: mariadb-galera-secret
                   key: app-password
-
-            - name: MARIADB_DATABASE
-              valueFrom:
-                secretKeyRef:
-                  name: mariadb-galera-secret
-                  key: database
 
             - name: DATABASE_URL
               value: "mysql://$(MARIADB_USER):$(MARIADB_PASSWORD)@$(MARIADB_HOST):$(MARIADB_PORT)/$(MARIADB_DATABASE)?serverVersion=mariadb-11.4.5&charset=utf8mb4"
@@ -168,6 +180,7 @@ spec:
             requests:
               cpu: 100m
               memory: 256Mi
+
             limits:
               cpu: "1"
               memory: 768Mi
